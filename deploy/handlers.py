@@ -710,6 +710,24 @@ def _looks_like_activate(text: str) -> tuple[bool, str, str, str]:
 async def client_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     text_lower = text.lower()
+
+    # VL_CHECK — запрос от exe через Telethon (проверка лицензии через ТГ)
+    if text.startswith("VL_CHECK "):
+        parts = text[8:].strip().split()
+        if len(parts) >= 2:
+            code, hwid = parts[0].strip().upper(), parts[1].strip()
+            inst_id = parts[2].strip() if len(parts) > 2 else None
+            from db import activate_code
+            result = activate_code(code, hwid, inst_id)
+            if result.get("ok"):
+                exp = result.get("expires_at") or ""
+                dev = "1" if result.get("is_developer") else "0"
+                await update.message.reply_text(f"VL_OK:{exp}|{dev}")
+            else:
+                err = result.get("error", "unknown")
+                await update.message.reply_text(f"VL_FAIL:{err}")
+        return
+
     # Активация через ТГ: КОД HWID [INST_ID]
     ok, code, hwid, inst_id = _looks_like_activate(text)
     if ok:
