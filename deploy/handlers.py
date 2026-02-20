@@ -541,7 +541,6 @@ def _client_keyboard():
         [InlineKeyboardButton("👤 Личный кабинет", callback_data="client_cabinet")],
         [InlineKeyboardButton("🛒 Купить подписку", callback_data="client_buy"), InlineKeyboardButton("🔑 Мой код", callback_data="client_mycode")],
         [InlineKeyboardButton("📥 Получить софт", callback_data="client_software")],
-        [InlineKeyboardButton("🔓 Активировать через ТГ", callback_data="client_activate_tg")],
     ])
 
 
@@ -580,21 +579,6 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📋 Мои выплаты", callback_data="client_payouts")],
             _client_menu_button(),
         ]
-        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-        return
-    if query.data == "client_activate_tg":
-        text = (
-            "🔓 *Активация через Telegram*\n\n"
-            "Работает без интернета на сервер — только Telegram.\n\n"
-            "1. Открой VoiceLab, нажми «Ввести код»\n"
-            "2. Выбери «Через Telegram»\n"
-            "3. Скопируй HWID и Installation ID\n"
-            "4. Отправь сюда в формате:\n"
-            "`КОД HWID INSTALLATION_ID`\n\n"
-            "Пример: `ABCD1234abcd5678 a1b2c3d4e5f6... x9y8z7w6v5u4...`\n\n"
-            "Бот пришлёт токен — вставь его в VoiceLab."
-        )
-        kb = [[InlineKeyboardButton("◀️ В меню", callback_data="client_back")]]
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         return
     if query.data == "client_invite":
