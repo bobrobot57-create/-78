@@ -541,6 +541,7 @@ def _client_keyboard():
         [InlineKeyboardButton("👤 Личный кабинет", callback_data="client_cabinet")],
         [InlineKeyboardButton("🛒 Купить подписку", callback_data="client_buy"), InlineKeyboardButton("🔑 Мой код", callback_data="client_mycode")],
         [InlineKeyboardButton("📥 Получить софт", callback_data="client_software")],
+        [InlineKeyboardButton("🔓 Активировать через ТГ", callback_data="client_activate_tg")],
     ])
 
 
@@ -579,6 +580,21 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📋 Мои выплаты", callback_data="client_payouts")],
             _client_menu_button(),
         ]
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        return
+    if query.data == "client_activate_tg":
+        text = (
+            "🔓 *Активация через Telegram*\n\n"
+            "Работает без интернета на сервер — только Telegram.\n\n"
+            "1. Открой VoiceLab, нажми «Ввести код»\n"
+            "2. Выбери «Через Telegram»\n"
+            "3. Скопируй HWID и Installation ID\n"
+            "4. Отправь сюда в формате:\n"
+            "`КОД HWID INSTALLATION_ID`\n\n"
+            "Пример: `ABCD1234abcd5678 a1b2c3d4e5f6... x9y8z7w6v5u4...`\n\n"
+            "Бот пришлёт токен — вставь его в VoiceLab."
+        )
+        kb = [[InlineKeyboardButton("◀️ В меню", callback_data="client_back")]]
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         return
     if query.data == "client_invite":
@@ -675,9 +691,39 @@ async def client_mycode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Код: `{r['code']}`", parse_mode="Markdown")
 
 
+def _looks_like_activate(text: str) -> tuple[bool, str, str, str]:
+    """Проверяет формат: КОД HWID [INST_ID]. Возвращает (ok, code, hwid, inst_id)."""
+    parts = (text or "").strip().split()
+    if len(parts) < 2:
+        return False, "", "", ""
+    code, hwid = parts[0].strip().upper(), parts[1].strip()
+    inst_id = parts[2].strip() if len(parts) > 2 else ""
+    if len(code) != 16 or not all(c in "0123456789ABCDEF" for c in code):
+        return False, "", "", ""
+    if len(hwid) != 32 or not all(c in "0123456789abcdef" for c in hwid.lower()):
+        return False, "", "", ""
+    if inst_id and (len(inst_id) != 32 or not all(c in "0123456789abcdef" for c in inst_id.lower())):
+        return False, "", "", ""
+    return True, code, hwid, inst_id
+
+
 async def client_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or "").lower()
-    if "оплатил" in text or "купить" in text:
+    text = (update.message.text or "").strip()
+    text_lower = text.lower()
+    # Активация через ТГ: КОД HWID [INST_ID]
+    ok, code, hwid, inst_id = _looks_like_activate(text)
+    if ok:
+        from token_utils import create_activation_token
+        ok_token, result = create_activation_token(code, hwid, inst_id)
+        if ok_token:
+            await update.message.reply_text(
+                f"✅ Токен активации (действует 15 мин):\n\n`{result}`\n\nСкопируй и вставь в окно VoiceLab.",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(f"❌ {result}")
+        return
+    if "оплатил" in text_lower or "купить" in text_lower:
         await update.message.reply_text("Напишите администратору. После подтверждения получите код.")
 
 
