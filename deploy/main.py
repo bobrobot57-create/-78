@@ -20,7 +20,7 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
-from telegram import Update
+from telegram import Update, BotCommand
 
 from db import init_db, check_license, activate_code
 from handlers import build_admin_app, build_client_app, set_client_bot
@@ -118,6 +118,11 @@ async def run():
             await admin_app.bot.set_webhook(f"{WEBHOOK_BASE}/webhook/admin")
     if client_app:
         await client_app.initialize()
+        # Пул команд в меню бота (как у LUX VIDEO BOT)
+        await client_app.bot.set_my_commands([
+            BotCommand("start", "Главное меню"),
+            BotCommand("mycode", "Мой код активации"),
+        ])
         if WEBHOOK_BASE:
             await client_app.bot.set_webhook(f"{WEBHOOK_BASE}/webhook/client")
 

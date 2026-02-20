@@ -544,6 +544,11 @@ def _client_keyboard():
     ])
 
 
+def _client_menu_button():
+    """Кнопка «Вернуться в меню» для всех экранов клиента."""
+    return [InlineKeyboardButton("◀️ В меню", callback_data="client_back")]
+
+
 async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
@@ -560,10 +565,34 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
         u = get_user(user_id)
         role = "🤝 Партнёр (20%)" if (u and u.get("is_partner")) else "👤 Клиент (10%)"
-        text = f"👤 *Личный кабинет*\n\n{role}\nРефералов: {len(refs)}\nК выплате: ${pending}\n\n🔗 Ваша реф-ссылка:\n`{ref_link}`"
+        text = (
+            "👤 *Личный кабинет*\n\n"
+            "━━━━━━━━━━━━━━━━\n"
+            f"📌 {role}\n"
+            f"👥 Рефералов: *{len(refs)}*\n"
+            f"💰 К выплате: *${pending}*\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Нажмите кнопку ниже, чтобы получить вашу реферальную ссылку."
+        )
         kb = [
+            [InlineKeyboardButton("🤝 Пригласить реферала", callback_data="client_invite")],
             [InlineKeyboardButton("📋 Мои выплаты", callback_data="client_payouts")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="client_back")],
+            _client_menu_button(),
+        ]
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        return
+    if query.data == "client_invite":
+        bot_username = context.bot.username or "NeuralVoiceLabBot"
+        ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+        text = (
+            "🤝 *Пригласить реферала*\n\n"
+            "Поделитесь ссылкой — за каждого приглашённого вы получите процент с его покупок.\n\n"
+            f"🔗 Ваша ссылка:\n`{ref_link}`\n\n"
+            "Нажмите на ссылку и скопируйте, чтобы отправить друзьям."
+        )
+        kb = [
+            [InlineKeyboardButton("◀️ В кабинет", callback_data="client_cabinet")],
+            _client_menu_button(),
         ]
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         return
@@ -574,7 +603,10 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             lines = [f"${p['amount_usd']} ({p['percent']}%) — {p['status']}" for p in payouts[:15]]
             text = "📋 *Мои выплаты*\n\n" + "\n".join(lines)
-        kb = [[InlineKeyboardButton("◀️ Кабинет", callback_data="client_cabinet")]]
+        kb = [
+            [InlineKeyboardButton("◀️ Кабинет", callback_data="client_cabinet")],
+            _client_menu_button(),
+        ]
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         return
     if query.data == "client_back":
@@ -588,12 +620,12 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"🛒 *Подписка*\n\n30 дней — ${price_30}\n60 дней — ${price_60}\n90 дней — ${price_90}\n\nНапишите «Оплатил» — администратор вышлет код после подтверждения.",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="client_back")]])
+            reply_markup=InlineKeyboardMarkup([_client_menu_button()])
         )
         return
     if query.data == "client_software":
         url = get_setting("software_url", "https://drive.google.com/")
-        await query.edit_message_text(f"📥 *Скачать VoiceLab*\n\n{url}\n\nРаспакуйте и запустите. Тест: 10 000 символов.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="client_back")]]))
+        await query.edit_message_text(f"📥 *Скачать VoiceLab*\n\n{url}\n\nРаспакуйте и запустите. Тест: 10 000 символов.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([_client_menu_button()]))
         return
     if query.data == "client_mycode":
         rows = list_codes_and_activations()
@@ -603,10 +635,17 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (r.get("assigned_username") or "").lower() == un
         )]
         if not my:
-            await query.edit_message_text("У вас нет кода. Купите подписку и получите код от администратора.")
+            await query.edit_message_text(
+                "У вас нет кода. Купите подписку и получите код от администратора.",
+                reply_markup=InlineKeyboardMarkup([_client_menu_button()])
+            )
         else:
             r = my[0]
-            await query.edit_message_text(f"🔑 *Ваш код*\n\n`{r['code']}`\n\nДо: {r.get('expires_at') or 'бессрочно'}", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="client_back")]]))
+            await query.edit_message_text(
+                f"🔑 *Ваш код*\n\n`{r['code']}`\n\nДо: {r.get('expires_at') or 'бессрочно'}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([_client_menu_button()])
+            )
 
 
 async def client_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
