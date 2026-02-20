@@ -69,6 +69,73 @@ def init_db():
                 added_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Пользователи клиентского бота (кто писал)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                telegram_id INTEGER PRIMARY KEY,
+                username TEXT,
+                referred_by INTEGER,
+                is_partner INTEGER DEFAULT 0,
+                custom_discount_pct REAL,
+                first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (referred_by) REFERENCES users(telegram_id)
+            )
+        """)
+        # Рефералы: кто кого привёл
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS referrals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                referrer_id INTEGER NOT NULL,
+                referred_id INTEGER NOT NULL UNIQUE,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (referrer_id) REFERENCES users(telegram_id),
+                FOREIGN KEY (referred_id) REFERENCES users(telegram_id)
+            )
+        """)
+        # Платежи (подтверждённые админом)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_telegram_id INTEGER NOT NULL,
+                amount_usd REAL NOT NULL,
+                plan_days INTEGER NOT NULL,
+                code_id INTEGER,
+                status TEXT DEFAULT 'confirmed',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (code_id) REFERENCES codes(id)
+            )
+        """)
+        # Реферальные выплаты (сколько кому должны)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS referral_payouts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                referrer_id INTEGER NOT NULL,
+                payment_id INTEGER NOT NULL,
+                amount_usd REAL NOT NULL,
+                percent REAL NOT NULL,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                paid_at TEXT,
+                FOREIGN KEY (referrer_id) REFERENCES users(telegram_id),
+                FOREIGN KEY (payment_id) REFERENCES payments(id)
+            )
+        """)
+        # Настройки (приветствие, цены, ссылка на софт)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_referral_payouts_referrer ON referral_payouts(referrer_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_telegram_id)")
+        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('welcome_message', '🎙 *VoiceLab* — озвучка текста\n\nОплатите подписку и напишите «Оплатил».')")
+        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('price_30', '15')")
+        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('price_60', '25')")
+        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('price_90', '35')")
+        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('software_url', 'https://drive.google.com/')")
         conn.commit()
 
 
@@ -260,6 +327,191 @@ def get_code_activation_status(code: str) -> dict | None:
     if not row or not row[0]:
         return {"status": "free", "hwid": None, "activated_at": None, "revoked": False}
     return {"status": "revoked" if row[2] else "activated", "hwid": row[0], "activated_at": row[1], "revoked": bool(row[2])}
+
+
+# --- Users & Referrals ---
+
+def ensure_user(telegram_id: int, username: str | None = None, referred_by: int | None = None) -> dict:
+    """Создаёт пользователя если нет, возвращает данные. При referred_by — создаёт связь referral."""
+    if referred_by:
+        with get_db() as conn:
+            cur = conn.cursor()
+            cur.execute("INSERT OR IGNORE INTO users (telegram_id, username, referred_by) VALUES (?, ?, ?)", (referred_by, "", None))
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT telegram_id, referred_by, is_partner, custom_discount_pct FROM users WHERE telegram_id = ?", (telegram_id,))
+        row = cur.fetchone()
+        if row:
+            if referred_by and not row[1]:
+                cur.execute("UPDATE users SET referred_by = ?, username = COALESCE(username, ?) WHERE telegram_id = ?", (referred_by, username or "", telegram_id))
+                cur.execute("INSERT OR IGNORE INTO referrals (referrer_id, referred_id) VALUES (?, ?)", (referred_by, telegram_id))
+            return {"telegram_id": row[0], "referred_by": row[1], "is_partner": bool(row[2]), "custom_discount_pct": row[3]}
+        cur.execute(
+            "INSERT INTO users (telegram_id, username, referred_by) VALUES (?, ?, ?)",
+            (telegram_id, username or "", referred_by if referred_by else None)
+        )
+        if referred_by:
+            cur.execute("INSERT INTO referrals (referrer_id, referred_id) VALUES (?, ?)", (referred_by, telegram_id))
+    return {"telegram_id": telegram_id, "referred_by": referred_by, "is_partner": False, "custom_discount_pct": None}
+
+
+def set_partner(telegram_id: int, is_partner: bool) -> bool:
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET is_partner = ? WHERE telegram_id = ?", (1 if is_partner else 0, telegram_id))
+        return cur.rowcount > 0
+
+
+def set_custom_discount(telegram_id: int, percent: float | None) -> bool:
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET custom_discount_pct = ? WHERE telegram_id = ?", (percent, telegram_id))
+        return cur.rowcount > 0
+
+
+def get_user_by_username(username: str) -> dict | None:
+    """Поиск по @username (без @)."""
+    un = (username or "").strip().lstrip("@").lower()
+    if not un:
+        return None
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT telegram_id, username, referred_by, is_partner, custom_discount_pct FROM users WHERE LOWER(REPLACE(username, '@', '')) = ?", (un,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {"telegram_id": row[0], "username": row[1], "referred_by": row[2], "is_partner": bool(row[3]), "custom_discount_pct": row[4]}
+
+
+def get_user(telegram_id: int) -> dict | None:
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT telegram_id, username, referred_by, is_partner, custom_discount_pct FROM users WHERE telegram_id = ?", (telegram_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {"telegram_id": row[0], "username": row[1], "referred_by": row[2], "is_partner": bool(row[3]), "custom_discount_pct": row[4]}
+
+
+def get_referral_percent(telegram_id: int) -> float:
+    """10% клиент, 20% партнёр. custom_discount_pct переопределяет."""
+    u = get_user(telegram_id)
+    if not u:
+        return 10.0
+    if u.get("custom_discount_pct") is not None:
+        return float(u["custom_discount_pct"])
+    return 20.0 if u.get("is_partner") else 10.0
+
+
+def list_referrals(referrer_id: int) -> list:
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT r.referred_id, u.username, r.created_at
+            FROM referrals r
+            LEFT JOIN users u ON u.telegram_id = r.referred_id
+            WHERE r.referrer_id = ?
+            ORDER BY r.created_at DESC
+        """, (referrer_id,))
+        return [{"telegram_id": r[0], "username": r[1], "created_at": r[2]} for r in cur.fetchall()]
+
+
+def add_payment(user_telegram_id: int, amount_usd: float, plan_days: int, code_id: int | None = None) -> int:
+    """Записывает платёж и начисляет реферальные выплаты. Возвращает payment_id."""
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO payments (user_telegram_id, amount_usd, plan_days, code_id) VALUES (?, ?, ?, ?)",
+            (user_telegram_id, amount_usd, plan_days, code_id)
+        )
+        pid = cur.lastrowid
+        u = get_user(user_telegram_id)
+        if u and u.get("referred_by"):
+            referrer_id = u["referred_by"]
+            pct = get_referral_percent(referrer_id)
+            amount = round(amount_usd * pct / 100, 2)
+            if amount > 0:
+                cur.execute(
+                    "INSERT INTO referral_payouts (referrer_id, payment_id, amount_usd, percent) VALUES (?, ?, ?, ?)",
+                    (referrer_id, pid, amount, pct)
+                )
+        conn.commit()
+    return pid
+
+
+def get_referral_stats() -> list:
+    """Статистика по всем рефералам: кто сколько привёл, ставка, сколько должны."""
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT u.telegram_id, u.username, u.is_partner, u.custom_discount_pct,
+                   (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.telegram_id) as ref_count,
+                   (SELECT COALESCE(SUM(amount_usd), 0) FROM referral_payouts rp WHERE rp.referrer_id = u.telegram_id AND rp.status = 'pending') as pending
+            FROM users u
+            WHERE u.telegram_id IN (SELECT referrer_id FROM referrals)
+            ORDER BY ref_count DESC
+        """)
+        rows = cur.fetchall()
+    result = []
+    for r in rows:
+        pct = r[3] if r[3] is not None else (20.0 if r[2] else 10.0)
+        result.append({
+            "telegram_id": r[0], "username": r[1], "is_partner": bool(r[2]),
+            "custom_discount_pct": r[3], "ref_count": r[4], "pending_usd": round(float(r[5] or 0), 2),
+            "percent": pct
+        })
+    return result
+
+
+def get_user_payouts(telegram_id: int) -> list:
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT rp.id, rp.amount_usd, rp.percent, rp.status, rp.created_at, p.plan_days
+            FROM referral_payouts rp
+            JOIN payments p ON p.id = rp.payment_id
+            WHERE rp.referrer_id = ?
+            ORDER BY rp.created_at DESC
+            LIMIT 50
+        """, (telegram_id,))
+        return [{"id": r[0], "amount_usd": r[1], "percent": r[2], "status": r[3], "created_at": r[4], "plan_days": r[5]} for r in cur.fetchall()]
+
+
+def get_user_total_pending(telegram_id: int) -> float:
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COALESCE(SUM(amount_usd), 0) FROM referral_payouts WHERE referrer_id = ? AND status = 'pending'", (telegram_id,))
+        return round(float(cur.fetchone()[0] or 0), 2)
+
+
+def list_all_users() -> list:
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT telegram_id, username, referred_by, is_partner, first_seen FROM users ORDER BY first_seen DESC")
+        return [{"telegram_id": r[0], "username": r[1], "referred_by": r[2], "is_partner": bool(r[3]), "first_seen": r[4]} for r in cur.fetchall()]
+
+
+def list_paid_users() -> list:
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT user_telegram_id FROM payments")
+        return [r[0] for r in cur.fetchall()]
+
+
+# --- Settings ---
+
+def get_setting(key: str, default: str = "") -> str:
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = cur.fetchone()
+        return row[0] if row and row[0] else default
+
+
+def set_setting(key: str, value: str):
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)", (key, value))
 
 
 def list_codes_and_activations() -> list:

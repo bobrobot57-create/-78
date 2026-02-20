@@ -23,7 +23,7 @@ from starlette.routing import Route
 from telegram import Update
 
 from db import init_db, check_license, activate_code
-from handlers import build_admin_app, build_client_app
+from handlers import build_admin_app, build_client_app, set_client_bot
 
 
 ADMIN_TOKEN = os.environ.get("ADMIN_BOT_TOKEN", "")
@@ -109,6 +109,8 @@ async def run():
 
     admin_app = build_admin_app(ADMIN_TOKEN) if ADMIN_TOKEN else None
     client_app = build_client_app(CLIENT_TOKEN) if CLIENT_TOKEN else None
+    if client_app:
+        set_client_bot(client_app.bot)
 
     if admin_app:
         await admin_app.initialize()
