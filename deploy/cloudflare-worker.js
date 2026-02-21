@@ -1,5 +1,5 @@
-// Cloudflare Worker — прокси на Railway
-// Маршрут: voicer-api.ru/* -> 78-production.up.railway.app/*
+// Cloudflare Worker — прокси на Railway (обход Bot Fight для РФ)
+// Маршрут: voicer-api.ru/* -> sgy416e6.up.railway.app/*
 
 const RAILWAY_ORIGIN = 'https://78-production.up.railway.app';
 
