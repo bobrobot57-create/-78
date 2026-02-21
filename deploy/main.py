@@ -115,16 +115,21 @@ async def run():
     if admin_app:
         await admin_app.initialize()
         if WEBHOOK_BASE:
-            await admin_app.bot.set_webhook(f"{WEBHOOK_BASE}/webhook/admin")
+            try:
+                await admin_app.bot.set_webhook(f"{WEBHOOK_BASE}/webhook/admin")
+            except Exception as e:
+                print(f"⚠️ Webhook admin: {e}. Проверь WEBHOOK_BASE_URL и DNS.")
     if client_app:
         await client_app.initialize()
-        # Пул команд в меню бота (как у LUX VIDEO BOT)
         await client_app.bot.set_my_commands([
             BotCommand("start", "Главное меню"),
             BotCommand("mycode", "Мой код активации"),
         ])
         if WEBHOOK_BASE:
-            await client_app.bot.set_webhook(f"{WEBHOOK_BASE}/webhook/client")
+            try:
+                await client_app.bot.set_webhook(f"{WEBHOOK_BASE}/webhook/client")
+            except Exception as e:
+                print(f"⚠️ Webhook client: {e}. Проверь WEBHOOK_BASE_URL и DNS.")
 
     routes = [
         Route("/check", api_check, methods=["POST"]),
