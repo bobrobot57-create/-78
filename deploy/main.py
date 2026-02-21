@@ -4,6 +4,10 @@ VoiceLab License Server — webhook-режим.
 Сервер спит, просыпается только на запрос: бот, API, активация exe.
 """
 import logging
+import traceback
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+log = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 import os
@@ -52,11 +56,19 @@ async def api_check(request: Request):
     installation_id = (data.get("installation_id") or "").strip() or None
     if not code or not hwid:
         return JSONResponse({"ok": False, "error": "missing_code_or_hwid"}, status_code=400)
-    result = check_license(code, hwid, installation_id)
+    try:
+        result = check_license(code, hwid, installation_id)
+    except Exception as e:
+        log.error("check_license: %s\n%s", e, traceback.format_exc())
+        return JSONResponse({"ok": False, "error": "server_error"}, status_code=500)
     if result["ok"]:
         return JSONResponse({"ok": True, "expires_at": result["expires_at"], "is_developer": result["is_developer"]})
     if result["error"] == "not_activated":
-        act = activate_code(code, hwid, installation_id)
+        try:
+            act = activate_code(code, hwid, installation_id)
+        except Exception as e:
+            log.error("activate_code: %s\n%s", e, traceback.format_exc())
+            return JSONResponse({"ok": False, "error": "server_error"}, status_code=500)
         if act["ok"]:
             return JSONResponse({"ok": True, "expires_at": act["expires_at"], "is_developer": act.get("is_developer", False)})
         return JSONResponse({"ok": False, "error": act.get("error", "activation_failed")}, status_code=400)
