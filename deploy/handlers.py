@@ -1084,8 +1084,18 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚠️ Не удалось создать ссылку. Попробуйте позже или выберите оплату картой.", reply_markup=InlineKeyboardMarkup([_client_menu_button()]))
         return
     if query.data == "client_software":
-        url = get_setting("software_url", "https://drive.google.com/")
-        await query.edit_message_text(f"📥 *Скачать VoiceLab*\n\n{url}\n\nРаспакуйте и запустите. Тест: 10 000 символов.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([_client_menu_button()]))
+        url = get_setting("software_url", "https://drive.google.com/").strip()
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        kb = [InlineKeyboardButton("📥 Открыть в браузере", url=url)]
+        kb.append(_client_menu_button()[0])
+        await query.edit_message_text(
+            f"📥 *Скачать VoiceLab*\n\n"
+            f"Нажмите кнопку ниже — откроется в браузере.\n"
+            f"Распакуйте и запустите. Тест: 10 000 символов.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
         return
     if query.data == "client_mycode":
         sub = get_user_subscription_info(user_id, username)
