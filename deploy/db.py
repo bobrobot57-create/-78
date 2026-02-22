@@ -411,11 +411,11 @@ def get_user_by_username(username: str) -> dict | None:
 def get_user(telegram_id: int) -> dict | None:
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT telegram_id, username, referred_by, is_partner, custom_discount_pct FROM users WHERE telegram_id = ?", (telegram_id,))
+        cur.execute("SELECT telegram_id, username, referred_by, is_partner, custom_discount_pct, first_seen FROM users WHERE telegram_id = ?", (telegram_id,))
         row = cur.fetchone()
         if not row:
             return None
-        return {"telegram_id": row[0], "username": row[1], "referred_by": row[2], "is_partner": bool(row[3]), "custom_discount_pct": row[4]}
+        return {"telegram_id": row[0], "username": row[1], "referred_by": row[2], "is_partner": bool(row[3]), "custom_discount_pct": row[4], "first_seen": row[5] if len(row) > 5 else None}
 
 
 def get_referral_percent(telegram_id: int) -> float:
@@ -526,6 +526,44 @@ def list_all_users() -> list:
         cur = conn.cursor()
         cur.execute("SELECT telegram_id, username, referred_by, is_partner, first_seen FROM users ORDER BY first_seen DESC")
         return [{"telegram_id": r[0], "username": r[1], "referred_by": r[2], "is_partner": bool(r[3]), "first_seen": r[4]} for r in cur.fetchall()]
+
+
+def get_client_full_info(telegram_id: int) -> dict | None:
+    """Полная информация о клиенте: профиль, подписка, рефералы, процент."""
+    u = get_user(telegram_id)
+    if not u:
+        return None
+    sub = get_user_subscription_info(telegram_id, u.get("username"))
+    ref_count = len(list_referrals(telegram_id))
+    pending = get_user_total_pending(telegram_id)
+    pct = get_referral_percent(telegram_id)
+    referrer = None
+    if u.get("referred_by"):
+        ref_u = get_user(u["referred_by"])
+        if ref_u:
+            referrer = f"@{ref_u.get('username') or ref_u['telegram_id']}"
+    days_left = None
+    if sub:
+        if sub["is_developer"]:
+            days_left = "∞"
+        elif sub["expires_at"]:
+            from datetime import datetime
+            exp = datetime.fromisoformat(sub["expires_at"])
+            days_left = max(0, (exp - datetime.utcnow()).days)
+    return {
+        "telegram_id": u["telegram_id"],
+        "username": u.get("username") or "",
+        "referred_by": u.get("referred_by"),
+        "referrer": referrer,
+        "is_partner": u.get("is_partner", False),
+        "custom_discount_pct": u.get("custom_discount_pct"),
+        "first_seen": u.get("first_seen"),
+        "ref_count": ref_count,
+        "pending_usd": pending,
+        "percent": pct,
+        "subscription": sub,
+        "days_left": days_left,
+    }
 
 
 def list_paid_users() -> list:

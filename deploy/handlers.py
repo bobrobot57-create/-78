@@ -21,7 +21,7 @@ from db import (
     create_code, create_codes_batch, revoke_code, list_codes_and_activations,
     get_owner_id, get_all_admin_ids, add_admin, remove_admin, list_admins, is_appointed_admin,
     set_code_assigned, delete_code, delete_all_codes, get_free_codes,
-    get_user_subscription_info,
+    get_user_subscription_info, get_client_full_info,
     ensure_user, get_user, get_user_by_username, set_partner, set_custom_discount,
     list_referrals, add_payment, get_referral_stats, get_user_payouts, get_user_total_pending,
     list_all_users, list_paid_users, get_setting, set_setting, list_recent_payments,
@@ -41,6 +41,7 @@ def _main_menu_keyboard(is_owner: bool):
         [InlineKeyboardButton("🎁 Выдать код клиенту", callback_data="give_code_menu")],
         [InlineKeyboardButton("💰 Создать код", callback_data="create_code_menu")],
         [InlineKeyboardButton("📋 Список кодов", callback_data="list_codes")],
+        [InlineKeyboardButton("👥 Список клиентов", callback_data="list_clients")],
         [InlineKeyboardButton("📊 Рефералы", callback_data="ref_stats")],
         [InlineKeyboardButton("📜 Логи платежей", callback_data="payments_log")],
     ]
@@ -305,6 +306,132 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("◀️ Меню", callback_data="main_menu")],
         ]))
         return
+    if data == "list_clients" or (data.startswith("list_clients:") and len(data) > 12):
+        page = int(data.split(":")[1]) if data.startswith("list_clients:") else 0
+        search = context.user_data.get("client_search") or ""
+        users = list_all_users()
+        if search:
+            un = search.lower().lstrip("@")
+            users = [u for u in users if un in (u.get("username") or "").lower() or str(u["telegram_id"]) == search]
+        PAGE_SIZE = 10
+        total_pages = max(1, (len(users) + PAGE_SIZE - 1) // PAGE_SIZE)
+        page = max(0, min(page, total_pages - 1))
+        start = page * PAGE_SIZE
+        page_users = users[start:start + PAGE_SIZE]
+        paid = set(list_paid_users())
+        lines, kb = [], []
+        for u in page_users:
+            un = f"@{u['username']}" if u.get("username") else f"ID:{u['telegram_id']}"
+            role = "🤝" if u.get("is_partner") else "👤"
+            pay_mark = "💰" if u["telegram_id"] in paid else "—"
+            lines.append(f"{role} {un} {pay_mark}")
+            kb.append([InlineKeyboardButton(f"👁 {un}", callback_data=f"client_{u['telegram_id']}")])
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("◀️", callback_data=f"list_clients:{page-1}"))
+        nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton("▶️", callback_data=f"list_clients:{page+1}"))
+        kb.append(nav)
+        footer = [InlineKeyboardButton("🔍 Поиск", callback_data="client_search"), InlineKeyboardButton("🔄", callback_data="list_clients")]
+        if search:
+            footer.insert(1, InlineKeyboardButton("✖", callback_data="client_search_clear"))
+        footer.append(InlineKeyboardButton("◀️ Меню", callback_data="main_menu"))
+        kb.append(footer)
+        header = f"Поиск: @{search}\n\n" if search else ""
+        text = f"👥 *Список клиентов* ({len(users)})\n\n━━━━━━━━━━━━━━━━\n\n{header}" + "\n".join(lines)
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        return
+    if data == "client_search":
+        context.user_data["awaiting_client_search"] = True
+        await query.edit_message_text("🔍 Отправьте @username или ID для поиска:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="list_clients")]]))
+        return
+    if data == "client_search_clear":
+        context.user_data.pop("client_search", None)
+        context.user_data.pop("awaiting_client_search", None)
+        users = list_all_users()
+        PAGE_SIZE = 10
+        total_pages = max(1, (len(users) + PAGE_SIZE - 1) // PAGE_SIZE)
+        page_users = users[:PAGE_SIZE]
+        paid = set(list_paid_users())
+        lines, kb = [], []
+        for u in page_users:
+            un = f"@{u['username']}" if u.get("username") else f"ID:{u['telegram_id']}"
+            role = "🤝" if u.get("is_partner") else "👤"
+            pay_mark = "💰" if u["telegram_id"] in paid else "—"
+            lines.append(f"{role} {un} {pay_mark}")
+            kb.append([InlineKeyboardButton(f"👁 {un}", callback_data=f"client_{u['telegram_id']}")])
+        nav = [InlineKeyboardButton("1/" + str(total_pages), callback_data="noop")]
+        if total_pages > 1:
+            nav.append(InlineKeyboardButton("▶️", callback_data="list_clients:1"))
+        kb.append(nav)
+        kb.append([InlineKeyboardButton("🔍 Поиск", callback_data="client_search"), InlineKeyboardButton("🔄", callback_data="list_clients"), InlineKeyboardButton("◀️ Меню", callback_data="main_menu")])
+        text = f"👥 *Список клиентов* ({len(users)})\n\n━━━━━━━━━━━━━━━━\n\n" + "\n".join(lines)
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        return
+    if data.startswith("client_") and data != "client_search" and data != "client_search_clear":
+        try:
+            uid = int(data.replace("client_", ""))
+        except ValueError:
+            return
+        info = get_client_full_info(uid)
+        if not info:
+            await query.edit_message_text("❌ Клиент не найден.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="list_clients")]]))
+            return
+        un = f"@{info['username']}" if info.get("username") else f"ID:{info['telegram_id']}"
+        role = "🤝 Партнёр" if info.get("is_partner") else "👤 Клиент"
+        pct = info.get("percent", 10)
+        sub = info.get("subscription")
+        sub_block = "—"
+        if sub:
+            if sub["status"] == "activated":
+                days = info.get("days_left")
+                sub_block = f"`{sub['code']}` · {'∞' if days == '∞' else f'{days} дн.'}"
+            else:
+                sub_block = f"`{sub['code']}` (ожидает активации)"
+        first_seen = (info.get("first_seen") or "")[:10] if info.get("first_seen") else "—"
+        text = (
+            f"👤 *Клиент* {un}\n\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"📌 Статус: {role}\n"
+            f"📊 Реф. процент: *{pct}%*\n"
+            f"🔑 Код: {sub_block}\n"
+            f"👥 Привёл рефералов: {info.get('ref_count', 0)}\n"
+            f"💰 К выплате: ${info.get('pending_usd', 0)}\n"
+            f"📅 В системе с: {first_seen}\n"
+            f"🔗 Пригласил: {info.get('referrer') or '—'}\n"
+            f"━━━━━━━━━━━━━━━━"
+        )
+        kb = []
+        if info.get("is_partner"):
+            kb.append([InlineKeyboardButton("👤 Сделать клиентом (10%)", callback_data=f"client_partner_{uid}_0")])
+        else:
+            kb.append([InlineKeyboardButton("🤝 Сделать партнёром (20%)", callback_data=f"client_partner_{uid}_1")])
+        kb.append([InlineKeyboardButton("✏️ Изменить % рефералки", callback_data=f"client_pct_{uid}")])
+        kb.append([InlineKeyboardButton("◀️ К списку", callback_data="list_clients")])
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        return
+    if data.startswith("client_partner_") and is_owner:
+        parts = data.replace("client_partner_", "").split("_")
+        if len(parts) == 2:
+            uid, is_part = int(parts[0]), int(parts[1])
+            set_partner(uid, bool(is_part))
+            info = get_client_full_info(uid)
+            if info:
+                un = f"@{info['username']}" if info.get("username") else f"ID:{info['telegram_id']}"
+                role = "партнёром (20%)" if is_part else "клиентом (10%)"
+                await query.edit_message_text(f"✅ {un} назначен {role}.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К клиенту", callback_data=f"client_{uid}")]]))
+        return
+    if data.startswith("client_pct_") and is_owner:
+        uid = int(data.replace("client_pct_", ""))
+        context.user_data["awaiting_client_pct"] = uid
+        info = get_client_full_info(uid)
+        un = f"@{info['username']}" if info and info.get("username") else f"ID:{uid}"
+        await query.edit_message_text(
+            f"✏️ Укажите процент рефералки для {un} (0–100):",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data=f"client_{uid}")]])
+        )
+        return
     if data == "ref_stats":
         context.user_data.pop("awaiting_payment", None)
         context.user_data.pop("awaiting_set_partner", None)
@@ -542,6 +669,37 @@ async def on_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data["code_search"] = text.lstrip("@")
         await update.message.reply_text(f"Поиск: @{context.user_data['code_search']}. Нажмите «Список кодов» в меню.")
+        return
+
+    if context.user_data.get("awaiting_client_search"):
+        context.user_data.pop("awaiting_client_search", None)
+        if text in ("отмена", "cancel"):
+            context.user_data.pop("client_search", None)
+            await update.message.reply_text("Отменено.")
+            return
+        context.user_data["client_search"] = text.strip().lstrip("@")
+        await update.message.reply_text(f"Поиск: {context.user_data['client_search']}. Нажмите «Список клиентов» в меню.")
+        return
+
+    if context.user_data.get("awaiting_client_pct") and _is_owner(update.effective_user.id):
+        uid = context.user_data.pop("awaiting_client_pct", None)
+        if text in ("отмена", "cancel"):
+            await update.message.reply_text("Отменено.", reply_markup=_main_menu_keyboard(True))
+            return
+        if uid is not None:
+            try:
+                pct = float(update.message.text.strip().replace(",", "."))
+                if 0 <= pct <= 100:
+                    set_custom_discount(uid, pct)
+                    info = get_client_full_info(uid)
+                    un = f"@{info['username']}" if info and info.get("username") else f"ID:{uid}"
+                    await update.message.reply_text(f"✅ Реферальный процент для {un}: {pct}%", reply_markup=_main_menu_keyboard(True))
+                else:
+                    await update.message.reply_text("⚠️ Процент от 0 до 100.")
+                    context.user_data["awaiting_client_pct"] = uid
+            except ValueError:
+                await update.message.reply_text("⚠️ Введите число.")
+                context.user_data["awaiting_client_pct"] = uid
         return
 
     if context.user_data.get("awaiting_assign_for"):
