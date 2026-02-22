@@ -20,7 +20,8 @@ from telegram.ext import (
 from db import (
     create_code, create_codes_batch, revoke_code, list_codes_and_activations,
     get_owner_id, get_all_admin_ids, add_admin, remove_admin, list_admins, is_appointed_admin,
-    set_code_assigned, delete_code, delete_all_codes,
+    set_code_assigned, delete_code, delete_all_codes, get_free_codes,
+    get_user_subscription_info,
     ensure_user, get_user, get_user_by_username, set_partner, set_custom_discount,
     list_referrals, add_payment, get_referral_stats, get_user_payouts, get_user_total_pending,
     list_all_users, list_paid_users, get_setting, set_setting, list_recent_payments,
@@ -37,6 +38,7 @@ def _is_admin(user_id: int) -> bool:
 
 def _main_menu_keyboard(is_owner: bool):
     kb = [
+        [InlineKeyboardButton("🎁 Выдать код клиенту", callback_data="give_code_menu")],
         [InlineKeyboardButton("💰 Создать код", callback_data="create_code_menu")],
         [InlineKeyboardButton("📋 Список кодов", callback_data="list_codes")],
         [InlineKeyboardButton("📊 Рефералы", callback_data="ref_stats")],
@@ -61,7 +63,7 @@ def _back_to_menu_keyboard(is_owner: bool):
     return InlineKeyboardMarkup([[InlineKeyboardButton("◀️ В меню", callback_data="main_menu")]])
 
 
-CODES_LEGEND = "_код | тип | @user | ст. | срок_\n\n"
+CODES_LEGEND = "код | тип | @user | ст. | срок\n━━━━━━━━━━━━━━━━\n\n"
 
 
 def _build_codes_list(rows: list, page: int, total_pages: int, search: str, context) -> tuple:
@@ -122,26 +124,104 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "main_menu":
         role = "👑 Владелец" if is_owner else "👤 Админ"
-        await query.edit_message_text(f"🎛 *Панель VoiceLab*\n\nВаша роль: {role}\n\nВыберите действие:", parse_mode="Markdown", reply_markup=_main_menu_keyboard(is_owner))
+        await query.edit_message_text(
+            f"🎛 *Панель VoiceLab*\n\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"📌 Роль: {role}\n"
+            f"━━━━━━━━━━━━━━━━\n\n"
+            f"Выберите действие:",
+            parse_mode="Markdown",
+            reply_markup=_main_menu_keyboard(is_owner)
+        )
         return
     if data == "create_code_menu":
         await query.edit_message_text("💰 *Создать код*\n\nВыберите тип:", parse_mode="Markdown", reply_markup=_create_code_keyboard())
         return
+    if data == "give_code_menu":
+        context.user_data.pop("awaiting_give_code_client", None)
+        context.user_data.pop("awaiting_give_code_type", None)
+        free = get_free_codes(15)
+        kb = []
+        for c in free[:10]:
+            dev = "♾" if c["is_developer"] else f"{c['days']}д"
+            kb.append([InlineKeyboardButton(f"📌 {c['code'][:8]}... ({dev})", callback_data=f"gc_{c['code']}")])
+        kb.append([InlineKeyboardButton("➕ Создать новый код", callback_data="give_code_new")])
+        kb.append([InlineKeyboardButton("◀️ Меню", callback_data="main_menu")])
+        text = "🎁 *Выдать код клиенту*\n\nВыберите свободный код или создайте новый:"
+        if not free:
+            text = "🎁 *Выдать код клиенту*\n\nНет свободных кодов. Создайте новый:"
+            kb = [[InlineKeyboardButton("➕ Создать новый код", callback_data="give_code_new")], [InlineKeyboardButton("◀️ Меню", callback_data="main_menu")]]
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        return
+    if data.startswith("gc_") and len(data) > 3:
+        code_val = data[3:]
+        context.user_data["awaiting_give_code_client"] = code_val
+        await query.edit_message_text(
+            f"🔗 *Привязать код* `{code_val}`\n\nОтправьте @username или ссылку t.me/username клиента:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="give_code_menu")]])
+        )
+        return
+    if data == "give_code_new":
+        context.user_data["awaiting_give_code_type"] = True
+        kb = [
+            [InlineKeyboardButton("30 дней", callback_data="code_30"), InlineKeyboardButton("60 дней", callback_data="code_60"), InlineKeyboardButton("90 дней", callback_data="code_90")],
+            [InlineKeyboardButton("♾ Вечный", callback_data="code_dev_1")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="give_code_menu")],
+        ]
+        await query.edit_message_text(
+            "➕ *Создать и выдать код*\n\nВыберите тип:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return
     if data == "code_30":
         code = create_code(days=30)
-        await query.edit_message_text(f"✅ *Код на 30 дней*\n\n`{code}`", parse_mode="Markdown", reply_markup=_back_to_menu_keyboard(is_owner))
+        if context.user_data.pop("awaiting_give_code_type", None):
+            context.user_data["awaiting_give_code_client"] = code
+            await query.edit_message_text(
+                f"✅ *Код создан* `{code}`\n\nОтправьте @username или ссылку t.me/username клиента:",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="give_code_menu")]])
+            )
+        else:
+            await query.edit_message_text(f"✅ *Код на 30 дней*\n\n`{code}`", parse_mode="Markdown", reply_markup=_back_to_menu_keyboard(is_owner))
         return
     if data == "code_60":
         code = create_code(days=60)
-        await query.edit_message_text(f"✅ *Код на 60 дней*\n\n`{code}`", parse_mode="Markdown", reply_markup=_back_to_menu_keyboard(is_owner))
+        if context.user_data.pop("awaiting_give_code_type", None):
+            context.user_data["awaiting_give_code_client"] = code
+            await query.edit_message_text(
+                f"✅ *Код создан* `{code}`\n\nОтправьте @username или ссылку t.me/username клиента:",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="give_code_menu")]])
+            )
+        else:
+            await query.edit_message_text(f"✅ *Код на 60 дней*\n\n`{code}`", parse_mode="Markdown", reply_markup=_back_to_menu_keyboard(is_owner))
         return
     if data == "code_90":
         code = create_code(days=90)
-        await query.edit_message_text(f"✅ *Код на 90 дней*\n\n`{code}`", parse_mode="Markdown", reply_markup=_back_to_menu_keyboard(is_owner))
+        if context.user_data.pop("awaiting_give_code_type", None):
+            context.user_data["awaiting_give_code_client"] = code
+            await query.edit_message_text(
+                f"✅ *Код создан* `{code}`\n\nОтправьте @username или ссылку t.me/username клиента:",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="give_code_menu")]])
+            )
+        else:
+            await query.edit_message_text(f"✅ *Код на 90 дней*\n\n`{code}`", parse_mode="Markdown", reply_markup=_back_to_menu_keyboard(is_owner))
         return
     if data == "code_dev_1":
         code = create_code(days=0, is_developer=True)
-        await query.edit_message_text(f"✅ *Вечный код*\n\n`{code}`", parse_mode="Markdown", reply_markup=_back_to_menu_keyboard(is_owner))
+        if context.user_data.pop("awaiting_give_code_type", None):
+            context.user_data["awaiting_give_code_client"] = code
+            await query.edit_message_text(
+                f"✅ *Код создан* `{code}`\n\nОтправьте @username или ссылку t.me/username клиента:",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="give_code_menu")]])
+            )
+        else:
+            await query.edit_message_text(f"✅ *Вечный код*\n\n`{code}`", parse_mode="Markdown", reply_markup=_back_to_menu_keyboard(is_owner))
         return
     if data == "list_codes" or (data.startswith("list_codes:") and len(data) > 11):
         page = int(data.split(":")[1]) if data.startswith("list_codes:") else 0
@@ -212,14 +292,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "payments_log":
         payments = list_recent_payments(25)
         if not payments:
-            text = "📜 *Логи платежей*\n\nПока нет записей."
+            text = "📜 *Логи платежей*\n\n━━━━━━━━━━━━━━━━\n\nПока нет записей."
         else:
             lines = []
             for p in payments:
                 sys_icon = "💳" if p["system"] == "freekassa" else ("₿" if p["system"] == "cryptomus" else "✏️")
                 created = (p["created"] or "")[:16] if p.get("created") else ""
-                lines.append(f"{sys_icon} `{p['user_id']}` ${p['amount']} {p['days']}д · {p['system']} · {created}")
-            text = "📜 *Логи платежей* (последние 25)\n\n" + "\n".join(lines)
+                lines.append(f"• {sys_icon} `{p['user_id']}` ${p['amount']} {p['days']}д · {p['system']} · {created}")
+            text = "📜 *Логи платежей* (последние 25)\n\n━━━━━━━━━━━━━━━━\n\n" + "\n".join(lines)
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 Обновить", callback_data="payments_log")],
             [InlineKeyboardButton("◀️ Меню", callback_data="main_menu")],
@@ -238,7 +318,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             role = "🤝 Партнёр" if s["is_partner"] else "👤 Клиент"
             pct = s["percent"]
             un = f"@{s['username']}" if s.get("username") else f"ID:{s['telegram_id']}"
-            lines.append(f"{role} {un}\n  Рефералов: {s['ref_count']} | Ставка: {pct}% | К выплате: ${s['pending_usd']}")
+            lines.append(f"• {role} {un}\n  Рефералов: {s['ref_count']} | Ставка: {pct}% | К выплате: ${s['pending_usd']}")
         kb = [
             [InlineKeyboardButton("➕ Записать платёж", callback_data="record_payment")],
             [InlineKeyboardButton("🤝 Назначить партнёра", callback_data="set_partner")],
@@ -246,7 +326,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔄 Обновить", callback_data="ref_stats")],
             [InlineKeyboardButton("◀️ Меню", callback_data="main_menu")],
         ]
-        await query.edit_message_text("📊 *Рефералы*\n\n" + "\n\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        await query.edit_message_text(
+            "📊 *Рефералы*\n\n━━━━━━━━━━━━━━━━\n\n" + "\n\n".join(lines) + "\n\n━━━━━━━━━━━━━━━━",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
         return
     if data == "record_payment" and is_owner:
         context.user_data["awaiting_payment"] = "amount"
@@ -260,14 +344,20 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         software_url = get_setting("software_url", "https://drive.google.com/")
         fk_ok = "✅" if get_setting("fk_merchant_id", "") else "❌"
         cm_ok = "✅" if get_setting("cryptomus_merchant", "") else "❌"
+        pay_on = get_setting("payments_enabled", "0") == "1"
+        manual_contact = get_setting("manual_payment_contact", "@Drykey")
         text = (
             f"⚙️ *Настройки*\n\n"
             f"Приветствие: _{welcome[:50]}..._\n\n"
             f"Цены (USD): 30д={price_30} | 60д={price_60} | 90д={price_90}\n"
             f"Софт: {software_url[:40]}...\n\n"
+            f"💳 Онлайн-оплата: {'✅ Вкл' if pay_on else '❌ Выкл'}\n"
+            f"📩 Контакт при выкл: {manual_contact}\n\n"
             f"Платёжки: FreeKassa {fk_ok} | Cryptomus {cm_ok}"
         )
         kb = [
+            [InlineKeyboardButton("💳 Вкл/выкл оплату", callback_data="toggle_payments")],
+            [InlineKeyboardButton("📩 Контакт при выкл", callback_data="set_manual_contact")],
             [InlineKeyboardButton("✏️ Приветствие", callback_data="set_welcome")],
             [InlineKeyboardButton("💵 Цены", callback_data="set_prices")],
             [InlineKeyboardButton("📥 Ссылка на софт", callback_data="set_software_url")],
@@ -275,6 +365,19 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("◀️ Меню", callback_data="main_menu")],
         ]
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        return
+    if data == "toggle_payments" and is_owner:
+        cur = "1" if get_setting("payments_enabled", "0") != "1" else "0"
+        set_setting("payments_enabled", cur)
+        status = "включена" if cur == "1" else "выключена"
+        await query.edit_message_text(f"✅ Онлайн-оплата {status}.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Настройки", callback_data="settings_menu")]]))
+        return
+    if data == "set_manual_contact" and is_owner:
+        context.user_data["awaiting_setting"] = "manual_payment_contact"
+        await query.edit_message_text(
+            "📩 Отправьте @username или контакт для клиентов (когда оплата выключена):",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="settings_menu")]])
+        )
         return
     if data == "broadcast_menu" and is_owner:
         users = list_all_users()
@@ -451,6 +554,46 @@ async def on_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🎛 Меню:", reply_markup=_main_menu_keyboard(_is_owner(update.effective_user.id)))
         return
 
+    if context.user_data.get("awaiting_give_code_client"):
+        code_val = context.user_data.pop("awaiting_give_code_client", None)
+        if text in ("отмена", "cancel"):
+            await update.message.reply_text("Отменено.", reply_markup=_main_menu_keyboard(_is_owner(update.effective_user.id)))
+            return
+        raw = update.message.text.strip()
+        un = raw.lstrip("@")
+        if "t.me/" in un.lower():
+            un = un.split("t.me/")[-1].split("/")[0].split("?")[0]
+        else:
+            un = un.lstrip("@")
+        if not un:
+            await update.message.reply_text("⚠️ Укажите @username или ссылку t.me/username")
+            context.user_data["awaiting_give_code_client"] = code_val
+            return
+        if code_val and set_code_assigned(code_val, un):
+            user = get_user_by_username(un)
+            sent = False
+            if user:
+                client_bot = get_client_bot()
+                if client_bot:
+                    try:
+                        await client_bot.send_message(
+                            user["telegram_id"],
+                            f"🎁 *Вам выдан код подписки VoiceLab*\n\n`{code_val}`\n\nАктивируйте в программе.",
+                            parse_mode="Markdown"
+                        )
+                        sent = True
+                    except Exception:
+                        pass
+            msg = f"✅ Код привязан к @{un}."
+            if sent:
+                msg += " Код отправлен клиенту в бота."
+            else:
+                msg += " ЛК и код появятся при первом заходе клиента в бота."
+            await update.message.reply_text(msg, reply_markup=_main_menu_keyboard(_is_owner(update.effective_user.id)))
+        else:
+            await update.message.reply_text("❌ Ошибка привязки. Проверьте код.", reply_markup=_main_menu_keyboard(_is_owner(update.effective_user.id)))
+        return
+
     if context.user_data.get("awaiting_admin_id") and _is_owner(update.effective_user.id):
         if text in ("отмена", "cancel"):
             context.user_data.pop("awaiting_admin_id", None)
@@ -503,6 +646,9 @@ async def on_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_text("⚠️ Нужно 2 значения: merchant_uuid api_key")
                 context.user_data["awaiting_setting"] = "cryptomus"
+        elif key == "manual_payment_contact":
+            set_setting("manual_payment_contact", update.message.text.strip() or "@Drykey")
+            await update.message.reply_text("✅ Контакт обновлён.", reply_markup=_main_menu_keyboard(True))
         return
 
     if context.user_data.get("awaiting_broadcast") and _is_owner(update.effective_user.id):
@@ -629,11 +775,27 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
         u = get_user(user_id)
         role = "🤝 Партнёр (20%)" if (u and u.get("is_partner")) else "👤 Клиент (10%)"
+        sub = get_user_subscription_info(user_id, username)
+        sub_block = ""
+        if sub:
+            if sub["status"] == "activated":
+                if sub["is_developer"]:
+                    sub_block = "📦 *Подписка:* ♾ Бессрочная\n"
+                elif sub["expires_at"]:
+                    from datetime import datetime
+                    exp = datetime.fromisoformat(sub["expires_at"])
+                    days_left = max(0, (exp - datetime.utcnow()).days)
+                    sub_block = f"📦 *Подписка:* {days_left} дн. осталось\n"
+                else:
+                    sub_block = "📦 *Подписка:* активна\n"
+            else:
+                sub_block = f"📦 *Код выдан:* `{sub['code']}` — активируйте в софте\n"
         text = (
             "👤 *Личный кабинет*\n\n"
             "━━━━━━━━━━━━━━━━\n"
             f"📌 {role}\n"
-            f"👥 Рефералов: *{len(refs)}*\n"
+            + (sub_block if sub_block else "")
+            + f"👥 Рефералов: *{len(refs)}*\n"
             f"💰 К выплате: *${pending}*\n"
             "━━━━━━━━━━━━━━━━\n\n"
             "Нажмите кнопку ниже, чтобы получить вашу реферальную ссылку."
@@ -678,6 +840,21 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(welcome, parse_mode="Markdown", reply_markup=_client_keyboard())
         return
     if query.data == "client_buy":
+        payments_enabled = get_setting("payments_enabled", "0") == "1"
+        manual_contact = get_setting("manual_payment_contact", "@Drykey")
+        if not payments_enabled:
+            text = (
+                "🛒 *Магазин подписок VoiceLab*\n\n"
+                "🎙 Профессиональная озвучка текста нейросетью\n\n"
+                "━━━━━━━━━━━━━━━━\n"
+                "📦 *30 дней* | *60 дней* | *90 дней*\n"
+                "━━━━━━━━━━━━━━━━\n\n"
+                "💳 Онлайн-оплата временно недоступна.\n\n"
+                f"📩 Для покупки напишите: {manual_contact}"
+            )
+            kb = [_client_menu_button()]
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+            return
         price_30 = float(get_setting("price_30", "15"))
         price_60 = float(get_setting("price_60", "25"))
         price_90 = float(get_setting("price_90", "35"))
@@ -716,7 +893,7 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("₿ Крипто 90д", callback_data="pay_cm_90"),
             ])
         if not has_fk and not has_cm:
-            text += "\n\n⚠️ Онлайн-оплата не настроена. Напишите «Оплатил» — администратор вышлет код."
+            text += f"\n\n⚠️ Онлайн-оплата не настроена. Напишите {manual_contact}"
         kb.append(_client_menu_button())
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         return
@@ -753,21 +930,17 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"📥 *Скачать VoiceLab*\n\n{url}\n\nРаспакуйте и запустите. Тест: 10 000 символов.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([_client_menu_button()]))
         return
     if query.data == "client_mycode":
-        rows = list_codes_and_activations()
-        un = (username or "").lower().lstrip("@")
-        my = [r for r in rows if not r.get("revoked") and (
-            r.get("user_telegram_id") == user_id or
-            (r.get("assigned_username") or "").lower() == un
-        )]
-        if not my:
+        sub = get_user_subscription_info(user_id, username)
+        if not sub:
             await query.edit_message_text(
                 "У вас нет кода. Купите подписку и получите код от администратора.",
                 reply_markup=InlineKeyboardMarkup([_client_menu_button()])
             )
         else:
-            r = my[0]
+            exp_str = "бессрочно" if sub["is_developer"] or not sub["expires_at"] else sub["expires_at"][:10]
+            status_hint = "Активируйте в софте." if sub["status"] == "assigned" else f"До: {exp_str}"
             await query.edit_message_text(
-                f"🔑 *Ваш код*\n\n`{r['code']}`\n\nДо: {r.get('expires_at') or 'бессрочно'}",
+                f"🔑 *Ваш код*\n\n`{sub['code']}`\n\n{status_hint}",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([_client_menu_button()])
             )
@@ -791,13 +964,14 @@ async def client_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def client_mycode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    rows = list_codes_and_activations()
-    my = [r for r in rows if r.get("user_telegram_id") == user_id and not r.get("revoked")]
-    if not my:
+    username = update.effective_user.username or ""
+    sub = get_user_subscription_info(user_id, username)
+    if not sub:
         await update.message.reply_text("У вас нет кода.")
     else:
-        r = my[0]
-        await update.message.reply_text(f"Код: `{r['code']}`", parse_mode="Markdown")
+        exp_str = "бессрочно" if sub["is_developer"] or not sub["expires_at"] else sub["expires_at"][:10]
+        status_hint = "Активируйте в софте." if sub["status"] == "assigned" else f"До: {exp_str}"
+        await update.message.reply_text(f"Код: `{sub['code']}`\n\n{status_hint}", parse_mode="Markdown")
 
 
 def _looks_like_activate(text: str) -> tuple[bool, str, str, str]:
@@ -851,7 +1025,8 @@ async def client_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ {result}")
         return
     if "оплатил" in text_lower or "купить" in text_lower:
-        await update.message.reply_text("Напишите администратору. После подтверждения получите код.")
+        manual_contact = get_setting("manual_payment_contact", "@Drykey")
+        await update.message.reply_text(f"Для покупки напишите: {manual_contact}\n\nПосле подтверждения получите код.")
 
 
 async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):

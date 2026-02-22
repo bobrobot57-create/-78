@@ -143,6 +143,8 @@ def init_db():
         cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('price_60', '25')")
         cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('price_90', '35')")
         cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('software_url', 'https://drive.google.com/')")
+        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payments_enabled', '0')")
+        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('manual_payment_contact', '@Drykey')")
         conn.commit()
 
 
@@ -364,8 +366,10 @@ def ensure_user(telegram_id: int, username: str | None = None, referred_by: int 
         row = cur.fetchone()
         if row:
             if referred_by and not row[1]:
-                cur.execute("UPDATE users SET referred_by = ?, username = COALESCE(username, ?) WHERE telegram_id = ?", (referred_by, username or "", telegram_id))
+                cur.execute("UPDATE users SET referred_by = ?, username = COALESCE(NULLIF(username,''), ?) WHERE telegram_id = ?", (referred_by, username or "", telegram_id))
                 cur.execute("INSERT OR IGNORE INTO referrals (referrer_id, referred_id) VALUES (?, ?)", (referred_by, telegram_id))
+            elif username:
+                cur.execute("UPDATE users SET username = ? WHERE telegram_id = ?", (username, telegram_id))
             return {"telegram_id": row[0], "referred_by": row[1], "is_partner": bool(row[2]), "custom_discount_pct": row[3]}
         cur.execute(
             "INSERT INTO users (telegram_id, username, referred_by) VALUES (?, ?, ?)",
@@ -559,6 +563,51 @@ def set_setting(key: str, value: str):
     with get_db() as conn:
         cur = conn.cursor()
         cur.execute("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)", (key, value))
+
+
+def get_free_codes(limit: int = 20) -> list:
+    """Коды без привязки (assigned_username пуст), свободные для выдачи."""
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT c.code, c.days, c.is_developer
+            FROM codes c
+            WHERE (c.assigned_username IS NULL OR c.assigned_username = '')
+            AND NOT EXISTS (SELECT 1 FROM activations a WHERE a.code_id = c.id AND a.revoked = 0)
+            ORDER BY c.id DESC
+            LIMIT ?
+        """, (limit,))
+        return [{"code": r[0], "days": r[1], "is_developer": bool(r[2])} for r in cur.fetchall()]
+
+
+def get_user_subscription_info(user_id: int, username: str | None = None) -> dict | None:
+    """Информация о подписке: код (присвоенный или активированный), срок, статус."""
+    un = (username or "").strip().lstrip("@").lower()
+    with get_db() as conn:
+        cur = conn.cursor()
+        # Сначала ищем по активации (user_telegram_id)
+        cur.execute("""
+            SELECT c.code, c.days, c.is_developer, a.expires_at, a.revoked
+            FROM activations a JOIN codes c ON c.id = a.code_id
+            WHERE a.user_telegram_id = ? AND a.revoked = 0
+            ORDER BY a.activated_at DESC LIMIT 1
+        """, (user_id,))
+        row = cur.fetchone()
+        if row:
+            return {"code": row[0], "days": row[1], "is_developer": bool(row[2]), "expires_at": row[3], "revoked": bool(row[4]), "status": "activated"}
+        # Иначе — по assigned_username (код выдан, но не активирован)
+        if un:
+            cur.execute("""
+                SELECT c.code, c.days, c.is_developer
+                FROM codes c
+                WHERE LOWER(REPLACE(COALESCE(c.assigned_username,''), '@', '')) = ?
+                AND NOT EXISTS (SELECT 1 FROM activations a WHERE a.code_id = c.id AND a.revoked = 0)
+                ORDER BY c.id DESC LIMIT 1
+            """, (un,))
+            row = cur.fetchone()
+            if row:
+                return {"code": row[0], "days": row[1], "is_developer": bool(row[2]), "expires_at": None, "revoked": False, "status": "assigned"}
+    return None
 
 
 def list_codes_and_activations() -> list:
