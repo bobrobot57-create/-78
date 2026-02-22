@@ -2,12 +2,15 @@
 """Обработчики ботов — общая логика для админ и клиент."""
 import os
 
-# Клиентский бот для рассылок (устанавливается из main.py)
+# Клиентский бот для рассылок и отправки кодов после оплаты (устанавливается из main.py)
 _client_bot = None
 
 def set_client_bot(bot):
     global _client_bot
     _client_bot = bot
+
+def get_client_bot():
+    return _client_bot
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest, TimedOut, NetworkError
 from telegram.ext import (
@@ -16,11 +19,11 @@ from telegram.ext import (
 )
 from db import (
     create_code, create_codes_batch, revoke_code, list_codes_and_activations,
-    get_owner_id, add_admin, remove_admin, list_admins, is_appointed_admin,
+    get_owner_id, get_all_admin_ids, add_admin, remove_admin, list_admins, is_appointed_admin,
     set_code_assigned, delete_code, delete_all_codes,
     ensure_user, get_user, get_user_by_username, set_partner, set_custom_discount,
     list_referrals, add_payment, get_referral_stats, get_user_payouts, get_user_total_pending,
-    list_all_users, list_paid_users, get_setting, set_setting,
+    list_all_users, list_paid_users, get_setting, set_setting, list_recent_payments,
 )
 
 
@@ -29,7 +32,7 @@ def _is_owner(user_id: int) -> bool:
 
 
 def _is_admin(user_id: int) -> bool:
-    return _is_owner(user_id) or is_appointed_admin(user_id)
+    return user_id in get_all_admin_ids() or is_appointed_admin(user_id)
 
 
 def _main_menu_keyboard(is_owner: bool):
@@ -37,6 +40,7 @@ def _main_menu_keyboard(is_owner: bool):
         [InlineKeyboardButton("💰 Создать код", callback_data="create_code_menu")],
         [InlineKeyboardButton("📋 Список кодов", callback_data="list_codes")],
         [InlineKeyboardButton("📊 Рефералы", callback_data="ref_stats")],
+        [InlineKeyboardButton("📜 Логи платежей", callback_data="payments_log")],
     ]
     if is_owner:
         kb.append([InlineKeyboardButton("👥 Админы", callback_data="list_admins")])
@@ -205,6 +209,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines = [f"👑 Владелец: `{owner_id}`"] + [f"👤 `{a['telegram_id']}`" for a in admins]
         await query.edit_message_text("👥 *Админы*\n\n" + "\n".join(lines), parse_mode="Markdown", reply_markup=_admins_keyboard())
         return
+    if data == "payments_log":
+        payments = list_recent_payments(25)
+        if not payments:
+            text = "📜 *Логи платежей*\n\nПока нет записей."
+        else:
+            lines = []
+            for p in payments:
+                sys_icon = "💳" if p["system"] == "freekassa" else ("₿" if p["system"] == "cryptomus" else "✏️")
+                created = (p["created"] or "")[:16] if p.get("created") else ""
+                lines.append(f"{sys_icon} `{p['user_id']}` ${p['amount']} {p['days']}д · {p['system']} · {created}")
+            text = "📜 *Логи платежей* (последние 25)\n\n" + "\n".join(lines)
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Обновить", callback_data="payments_log")],
+            [InlineKeyboardButton("◀️ Меню", callback_data="main_menu")],
+        ]))
+        return
     if data == "ref_stats":
         context.user_data.pop("awaiting_payment", None)
         context.user_data.pop("awaiting_set_partner", None)
@@ -238,11 +258,20 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         price_60 = get_setting("price_60", "25")
         price_90 = get_setting("price_90", "35")
         software_url = get_setting("software_url", "https://drive.google.com/")
-        text = f"⚙️ *Настройки*\n\nПриветствие: _{welcome[:50]}..._\n\nЦены (USD): 30д={price_30} | 60д={price_60} | 90д={price_90}\nСофт: {software_url[:40]}..."
+        fk_ok = "✅" if get_setting("fk_merchant_id", "") else "❌"
+        cm_ok = "✅" if get_setting("cryptomus_merchant", "") else "❌"
+        text = (
+            f"⚙️ *Настройки*\n\n"
+            f"Приветствие: _{welcome[:50]}..._\n\n"
+            f"Цены (USD): 30д={price_30} | 60д={price_60} | 90д={price_90}\n"
+            f"Софт: {software_url[:40]}...\n\n"
+            f"Платёжки: FreeKassa {fk_ok} | Cryptomus {cm_ok}"
+        )
         kb = [
             [InlineKeyboardButton("✏️ Приветствие", callback_data="set_welcome")],
             [InlineKeyboardButton("💵 Цены", callback_data="set_prices")],
             [InlineKeyboardButton("📥 Ссылка на софт", callback_data="set_software_url")],
+            [InlineKeyboardButton("💳 FreeKassa", callback_data="set_freekassa"), InlineKeyboardButton("₿ Cryptomus", callback_data="set_cryptomus")],
             [InlineKeyboardButton("◀️ Меню", callback_data="main_menu")],
         ]
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
@@ -277,6 +306,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "set_software_url" and is_owner:
         context.user_data["awaiting_setting"] = "software_url"
         await query.edit_message_text("📥 Отправьте ссылку на Google Drive:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="settings_menu")]]))
+        return
+    if data == "set_freekassa" and is_owner:
+        context.user_data["awaiting_setting"] = "freekassa"
+        await query.edit_message_text(
+            "💳 *FreeKassa*\n\nОтправьте через пробел:\n`merchant_id secret1 secret2`\n\nПример: 12345 abcdef secret2word",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="settings_menu")]])
+        )
+        return
+    if data == "set_cryptomus" and is_owner:
+        context.user_data["awaiting_setting"] = "cryptomus"
+        await query.edit_message_text(
+            "₿ *Cryptomus*\n\nОтправьте через пробел:\n`merchant_uuid api_key`\n\nUUID и ключ из личного кабинета Cryptomus.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="settings_menu")]])
+        )
         return
     if data.startswith("broadcast_") and is_owner:
         context.user_data["awaiting_broadcast"] = data.replace("broadcast_", "")
@@ -439,6 +484,25 @@ async def on_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif key == "software_url":
             set_setting("software_url", update.message.text.strip())
             await update.message.reply_text("✅ Ссылка обновлена.", reply_markup=_main_menu_keyboard(True))
+        elif key == "freekassa":
+            parts = update.message.text.strip().split()
+            if len(parts) >= 3:
+                set_setting("fk_merchant_id", parts[0])
+                set_setting("fk_secret_1", parts[1])
+                set_setting("fk_secret_2", parts[2])
+                await update.message.reply_text("✅ FreeKassa настроен.", reply_markup=_main_menu_keyboard(True))
+            else:
+                await update.message.reply_text("⚠️ Нужно 3 значения: merchant_id secret1 secret2")
+                context.user_data["awaiting_setting"] = "freekassa"
+        elif key == "cryptomus":
+            parts = update.message.text.strip().split()
+            if len(parts) >= 2:
+                set_setting("cryptomus_merchant", parts[0])
+                set_setting("cryptomus_api_key", parts[1])
+                await update.message.reply_text("✅ Cryptomus настроен.", reply_markup=_main_menu_keyboard(True))
+            else:
+                await update.message.reply_text("⚠️ Нужно 2 значения: merchant_uuid api_key")
+                context.user_data["awaiting_setting"] = "cryptomus"
         return
 
     if context.user_data.get("awaiting_broadcast") and _is_owner(update.effective_user.id):
@@ -614,14 +678,75 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(welcome, parse_mode="Markdown", reply_markup=_client_keyboard())
         return
     if query.data == "client_buy":
-        price_30 = get_setting("price_30", "15")
-        price_60 = get_setting("price_60", "25")
-        price_90 = get_setting("price_90", "35")
-        await query.edit_message_text(
-            f"🛒 *Подписка*\n\n30 дней — ${price_30}\n60 дней — ${price_60}\n90 дней — ${price_90}\n\nНапишите «Оплатил» — администратор вышлет код после подтверждения.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([_client_menu_button()])
+        price_30 = float(get_setting("price_30", "15"))
+        price_60 = float(get_setting("price_60", "25"))
+        price_90 = float(get_setting("price_90", "35"))
+        from payment import generate_freekassa_link, create_cryptomus_invoice
+        import os
+        webhook_base = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/")
+        fk_30 = generate_freekassa_link(user_id, price_30, 30)
+        fk_60 = generate_freekassa_link(user_id, price_60, 60)
+        fk_90 = generate_freekassa_link(user_id, price_90, 90)
+        has_fk = bool(fk_30 and fk_60 and fk_90)
+        cm_merchant = get_setting("cryptomus_merchant", "") or os.environ.get("CRYPTOMUS_MERCHANT", "")
+        cm_key = get_setting("cryptomus_api_key", "") or os.environ.get("CRYPTOMUS_API_KEY", "")
+        has_cm = bool(cm_merchant and cm_key)
+        text = (
+            "🛒 *Магазин подписок VoiceLab*\n\n"
+            "🎙 Профессиональная озвучка текста нейросетью\n\n"
+            "━━━━━━━━━━━━━━━━\n"
+            f"📦 *30 дней* — ${price_30}  _(выгодно попробовать)_\n"
+            f"📦 *60 дней* — ${price_60}  _(оптимально)_\n"
+            f"📦 *90 дней* — ${price_90}  _(макс. выгода)_\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "💡 Выберите тариф и способ оплаты.\n"
+            "✅ Ключ придёт сюда автоматически после оплаты."
         )
+        kb = []
+        if has_fk:
+            kb.append([
+                InlineKeyboardButton("💳 Карта 30д", url=fk_30),
+                InlineKeyboardButton("💳 Карта 60д", url=fk_60),
+                InlineKeyboardButton("💳 Карта 90д", url=fk_90),
+            ])
+        if has_cm:
+            kb.append([
+                InlineKeyboardButton("₿ Крипто 30д", callback_data="pay_cm_30"),
+                InlineKeyboardButton("₿ Крипто 60д", callback_data="pay_cm_60"),
+                InlineKeyboardButton("₿ Крипто 90д", callback_data="pay_cm_90"),
+            ])
+        if not has_fk and not has_cm:
+            text += "\n\n⚠️ Онлайн-оплата не настроена. Напишите «Оплатил» — администратор вышлет код."
+        kb.append(_client_menu_button())
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        return
+    if query.data and query.data.startswith("pay_cm_"):
+        plan_days = int(query.data.replace("pay_cm_", ""))
+        if plan_days not in (30, 60, 90):
+            return
+        price_key = f"price_{plan_days}"
+        amount = float(get_setting(price_key, "15" if plan_days == 30 else "25" if plan_days == 60 else "35"))
+        import os
+        webhook_base = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/")
+        if not webhook_base:
+            await query.edit_message_text("⚠️ Сервер не настроен. Обратитесь к администратору.", reply_markup=InlineKeyboardMarkup([_client_menu_button()]))
+            return
+        import time
+        order_id = f"cm_{user_id}_{plan_days}_{int(time.time())}"
+        url_cb = f"{webhook_base}/payment/cryptomus"
+        from payment import create_cryptomus_invoice
+        inv = create_cryptomus_invoice(amount, order_id, user_id, plan_days, url_cb)
+        if inv and inv.get("url"):
+            await query.edit_message_text(
+                f"₿ *Оплата {plan_days} дней (${amount})*\n\nПерейдите по ссылке для оплаты криптовалютой. Ключ придёт сюда после подтверждения.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔗 Перейти к оплате", url=inv["url"])],
+                    _client_menu_button(),
+                ])
+            )
+        else:
+            await query.edit_message_text("⚠️ Не удалось создать ссылку. Попробуйте позже или выберите оплату картой.", reply_markup=InlineKeyboardMarkup([_client_menu_button()]))
         return
     if query.data == "client_software":
         url = get_setting("software_url", "https://drive.google.com/")

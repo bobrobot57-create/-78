@@ -92,7 +92,7 @@ def init_db():
                 FOREIGN KEY (referred_id) REFERENCES users(telegram_id)
             )
         """)
-        # Платежи (подтверждённые админом)
+        # Платежи (подтверждённые админом или платёжными системами)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS payments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,10 +101,17 @@ def init_db():
                 plan_days INTEGER NOT NULL,
                 code_id INTEGER,
                 status TEXT DEFAULT 'confirmed',
+                merchant_order_id TEXT,
+                payment_system TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (code_id) REFERENCES codes(id)
             )
         """)
+        for col in ("merchant_order_id", "payment_system"):
+            try:
+                cur.execute(f"ALTER TABLE payments ADD COLUMN {col} TEXT")
+            except sqlite3.OperationalError:
+                pass
         # Реферальные выплаты (сколько кому должны)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS referral_payouts (
@@ -140,6 +147,7 @@ def init_db():
 
 
 def get_owner_id():
+    """ID владельца (первый в списке ADMIN_USER_IDS)."""
     ids = os.environ.get("ADMIN_USER_IDS", "").strip()
     if not ids:
         return None
@@ -147,6 +155,19 @@ def get_owner_id():
         return int(ids.split(",")[0].strip())
     except ValueError:
         return None
+
+
+def get_all_admin_ids() -> list[int]:
+    """Все ID из ADMIN_USER_IDS — полный доступ к админ-панели (владелец + партнёры)."""
+    ids = os.environ.get("ADMIN_USER_IDS", "").strip()
+    if not ids:
+        return []
+    result = []
+    for part in ids.split(","):
+        part = part.strip()
+        if part and part.isdigit():
+            result.append(int(part))
+    return result
 
 
 def add_admin(telegram_id: int, username: str | None, added_by: int) -> bool:
@@ -416,13 +437,25 @@ def list_referrals(referrer_id: int) -> list:
         return [{"telegram_id": r[0], "username": r[1], "created_at": r[2]} for r in cur.fetchall()]
 
 
-def add_payment(user_telegram_id: int, amount_usd: float, plan_days: int, code_id: int | None = None) -> int:
+def payment_exists_by_order_id(merchant_order_id: str) -> bool:
+    """Проверяет, был ли платёж с таким order_id уже обработан (защита от дублей)."""
+    if not merchant_order_id:
+        return False
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM payments WHERE merchant_order_id = ?", (merchant_order_id,))
+        return cur.fetchone() is not None
+
+
+def add_payment(user_telegram_id: int, amount_usd: float, plan_days: int, code_id: int | None = None,
+                merchant_order_id: str | None = None, payment_system: str | None = None) -> int:
     """Записывает платёж и начисляет реферальные выплаты. Возвращает payment_id."""
     with get_db() as conn:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO payments (user_telegram_id, amount_usd, plan_days, code_id) VALUES (?, ?, ?, ?)",
-            (user_telegram_id, amount_usd, plan_days, code_id)
+            """INSERT INTO payments (user_telegram_id, amount_usd, plan_days, code_id, merchant_order_id, payment_system)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_telegram_id, amount_usd, plan_days, code_id, merchant_order_id, payment_system)
         )
         pid = cur.lastrowid
         u = get_user(user_telegram_id)
@@ -496,6 +529,20 @@ def list_paid_users() -> list:
         cur = conn.cursor()
         cur.execute("SELECT DISTINCT user_telegram_id FROM payments")
         return [r[0] for r in cur.fetchall()]
+
+
+def list_recent_payments(limit: int = 30) -> list:
+    """Последние платежи для админ-логов (user_id, amount, days, system, order_id, created)."""
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT user_telegram_id, amount_usd, plan_days, payment_system, merchant_order_id, created_at
+            FROM payments ORDER BY id DESC LIMIT ?
+        """, (limit,))
+        return [
+            {"user_id": r[0], "amount": r[1], "days": r[2], "system": r[3] or "manual", "order_id": r[4], "created": r[5]}
+            for r in cur.fetchall()
+        ]
 
 
 # --- Settings ---
