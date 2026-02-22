@@ -142,7 +142,7 @@ def init_db():
         cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('price_30', '15')")
         cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('price_60', '25')")
         cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('price_90', '35')")
-        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('software_url', 'https://drive.google.com/')")
+        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('software_url', 'https://drive.google.com/drive/folders/18hdLnr_zPo7_Eao9thFQkp2H4nbgtLIa')")
         cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payments_enabled', '0')")
         cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('manual_payment_contact', '@Drykey')")
         conn.commit()

@@ -535,7 +535,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if data == "set_software_url" and is_owner:
         context.user_data["awaiting_setting"] = "software_url"
-        await query.edit_message_text("📥 Отправьте ссылку на Google Drive:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="settings_menu")]]))
+        await query.edit_message_text("📥 Отправьте ссылку (Google Drive или любую другую):", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="settings_menu")]]))
         return
     if data == "set_freekassa" and is_owner:
         context.user_data["awaiting_setting"] = "freekassa"
@@ -905,10 +905,13 @@ async def on_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def _client_keyboard():
+    url = get_setting("software_url", "https://drive.google.com/drive/folders/18hdLnr_zPo7_Eao9thFQkp2H4nbgtLIa").strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("👤 Личный кабинет", callback_data="client_cabinet")],
         [InlineKeyboardButton("🛒 Купить подписку", callback_data="client_buy"), InlineKeyboardButton("🔑 Мой код", callback_data="client_mycode")],
-        [InlineKeyboardButton("📥 Получить софт", callback_data="client_software")],
+        [InlineKeyboardButton("📥 Получить софт", url=url)],
     ])
 
 
