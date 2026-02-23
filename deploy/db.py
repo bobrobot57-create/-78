@@ -119,7 +119,8 @@ def _get_conn():
     if _USE_PG:
         pool = _get_pg_pool()
         if pool:
-            conn = pool.getconn()
+            # block=True, timeout=30 — ждать соединение вместо немедленного PoolError
+            conn = pool.getconn(block=True, timeout=30)
             return _PgConnWrapper(conn)
         import psycopg2
         return _PgConnWrapper(psycopg2.connect(_DATABASE_URL))

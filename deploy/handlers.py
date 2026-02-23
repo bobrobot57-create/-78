@@ -1392,11 +1392,12 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 
 def build_admin_app(token: str) -> Application:
+    # concurrent_updates(32) — не 256, иначе пул PostgreSQL исчерпывается
     app = (
         Application.builder()
         .token(token)
         .updater(None)
-        .concurrent_updates(True)
+        .concurrent_updates(32)
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
@@ -1423,7 +1424,7 @@ def build_client_app(token: str) -> Application:
         Application.builder()
         .token(token)
         .updater(None)
-        .concurrent_updates(True)
+        .concurrent_updates(32)
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
