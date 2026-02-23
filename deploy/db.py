@@ -139,8 +139,23 @@ def get_db():
         conn.close()
 
 
+def _pg_column_exists(cur, table: str, column: str) -> bool:
+    """Проверка: есть ли колонка в таблице (PostgreSQL). Не пишет в лог при отсутствии."""
+    cur.execute(
+        "SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name=%s AND column_name=%s",
+        (table, column)
+    )
+    return cur.fetchone() is not None
+
+
 def _alter_safe(conn, cur, sql):
-    """Выполнить ALTER TABLE, игнорируя ошибку «колонка уже есть». SAVEPOINT чтобы не откатывать всю транзакцию."""
+    """Выполнить ALTER TABLE, игнорируя ошибку «колонка уже есть»."""
+    if _USE_PG and "ADD COLUMN" in sql.upper():
+        # PostgreSQL: проверяем до ALTER — не будет ошибки в логах
+        import re
+        m = re.search(r"ALTER TABLE\s+(\w+)\s+ADD COLUMN\s+(\w+)", sql, re.I)
+        if m and _pg_column_exists(cur, m.group(1), m.group(2)):
+            return
     try:
         cur.execute("SAVEPOINT alter_safe")
         cur.execute(sql)
@@ -837,6 +852,16 @@ def get_user(telegram_id: int) -> dict | None:
         }
 
 
+def _to_datetime(val):
+    """Преобразует str или datetime в datetime (PostgreSQL возвращает datetime)."""
+    if val is None:
+        return None
+    from datetime import datetime
+    if hasattr(val, "year"):  # уже datetime
+        return val
+    return datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+
+
 def get_referral_percent(telegram_id: int) -> float:
     """10% клиент/подарок, 20% партнёр. custom_discount_pct переопределяет."""
     u = get_user(telegram_id)
@@ -1022,7 +1047,7 @@ def list_clients_with_extended(sort_by: str = "date") -> list:
             return 3
         users.sort(key=_st)
     else:
-        users.sort(key=lambda u: u.get("first_seen") or "", reverse=True)
+        users.sort(key=lambda u: str(u.get("first_seen") or ""), reverse=True)
     return users
 
 
@@ -1048,8 +1073,8 @@ def get_client_full_info(telegram_id: int, username: str | None = None) -> dict 
             days_left = "∞"
         elif sub["expires_at"]:
             from datetime import datetime
-            exp = datetime.fromisoformat(sub["expires_at"])
-            days_left = max(0, (exp - datetime.utcnow()).days)
+            exp = _to_datetime(sub["expires_at"])
+            days_left = max(0, (exp - datetime.utcnow()).days) if exp else None
     return {
         "telegram_id": u["telegram_id"],
         "username": u.get("username") or "",

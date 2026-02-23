@@ -32,6 +32,13 @@ from db import (
 )
 
 
+def _fmt_date(val):
+    """Форматирование даты для отображения (str или datetime от PostgreSQL)."""
+    if not val:
+        return "—"
+    return str(val)[:10]
+
+
 def _is_owner(user_id: int) -> bool:
     """Полные права: владелец (первый в ADMIN_USER_IDS) или любой админ из admins."""
     if get_owner_id() is not None and user_id == get_owner_id():
@@ -86,7 +93,12 @@ def _build_codes_list(rows: list, page: int, total_pages: int, search: str, cont
         acc = f"@{r['assigned_username']}" if r.get("assigned_username") else "—"
         status = "отозван" if r.get("revoked") else ("акт" if r.get("hwid") else "—")
         exp_raw = r.get("expires_at")
-        days_str = "∞" if not exp_raw or r["is_developer"] else (f"{max(0, (datetime.fromisoformat(exp_raw) - now).days)}д" if exp_raw else "?")
+        if not exp_raw or r["is_developer"]:
+            days_str = "∞"
+        else:
+            from db import _to_datetime
+            exp = _to_datetime(exp_raw)
+            days_str = f"{max(0, (exp - now).days)}д" if exp else "?"
         rev = " ❌" if r.get("revoked") else ""
         lines.append(f"`{r['code']}` {dev} {acc} {status} {days_str}{rev}")
         # Кнопка привязки только для свободных кодов — иначе перезапишем предыдущего клиента
@@ -534,7 +546,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 sub_block = f"`{sub['code']}` · {'∞' if days == '∞' else f'{days} дн.'}"
             else:
                 sub_block = f"`{sub['code']}` (ожидает активации)"
-        first_seen = (info.get("first_seen") or "")[:10] if info.get("first_seen") else "—"
+        first_seen = _fmt_date(info.get("first_seen"))
         text = (
             f"👤 *Клиент* {un}\n\n"
             f"━━━━━━━━━━━━━━━━\n"
@@ -1101,8 +1113,9 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     sub_block = "📦 *Подписка:* ♾ Бессрочная\n"
                 elif sub["expires_at"]:
                     from datetime import datetime
-                    exp = datetime.fromisoformat(sub["expires_at"])
-                    days_left = max(0, (exp - datetime.utcnow()).days)
+                    from db import _to_datetime
+                    exp = _to_datetime(sub["expires_at"])
+                    days_left = max(0, (exp - datetime.utcnow()).days) if exp else 0
                     sub_block = f"📦 *Подписка:* {days_left} дн. осталось\n"
                 else:
                     sub_block = "📦 *Подписка:* активна\n"
@@ -1275,7 +1288,7 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([_client_menu_button()])
             )
         else:
-            exp_str = "бессрочно" if sub["is_developer"] or not sub["expires_at"] else sub["expires_at"][:10]
+            exp_str = "бессрочно" if sub["is_developer"] or not sub["expires_at"] else _fmt_date(sub["expires_at"])
             status_hint = "Активируйте в софте." if sub["status"] == "assigned" else f"До: {exp_str}"
             await query.edit_message_text(
                 f"🔑 *Ваш код*\n\n`{sub['code']}`\n\n{status_hint}",
