@@ -1452,7 +1452,7 @@ def build_admin_app(token: str) -> Application:
         Application.builder()
         .token(token)
         .updater(None)
-        .concurrent_updates(8)
+        .concurrent_updates(4)  # 4+4=8 воркеров, <= 8 слотов БД — без блокировок
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
@@ -1479,7 +1479,7 @@ def build_client_app(token: str) -> Application:
         Application.builder()
         .token(token)
         .updater(None)
-        .concurrent_updates(8)
+        .concurrent_updates(4)  # 4+4=8 воркеров, <= 8 слотов БД — без блокировок
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)

@@ -7,8 +7,8 @@ import threading
 import time
 from contextlib import contextmanager
 
-# Railway Free может лимитить соединения. 10 — безопасно.
-_DB_SEMAPHORE = threading.Semaphore(int(os.environ.get("DB_CONCURRENT_LIMIT", "10")))
+# Railway Free лимитит соединения. 8 слотов = 4+4 воркера (admin+client), без блокировок.
+_DB_SEMAPHORE = threading.Semaphore(int(os.environ.get("DB_CONCURRENT_LIMIT", "8")))
 
 # Автоперезапуск отключён по умолчанию (0 = никогда). Иначе при PoolError контейнер уходит в цикл рестартов.
 _CRITICAL_ERRORS = []
@@ -120,7 +120,7 @@ def _get_pg_pool():
     if _PG_POOL is None and _USE_PG:
         import psycopg2.pool
         minconn = 3
-        maxconn = int(os.environ.get("DB_POOL_SIZE", "12"))  # Railway Free лимитит — ставим 12
+        maxconn = int(os.environ.get("DB_POOL_SIZE", "8"))  # = DB_CONCURRENT_LIMIT, под лимит Railway
         _PG_POOL = psycopg2.pool.ThreadedConnectionPool(minconn, maxconn, _DATABASE_URL)
     return _PG_POOL
 

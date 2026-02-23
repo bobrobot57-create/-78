@@ -96,6 +96,7 @@ async def webhook_admin(request: Request):
     if not ADMIN_TOKEN:
         return Response(status_code=500)
     if not can_accept_db_request():
+        log.warning("webhook/admin: 503 — слоты БД заняты")
         return Response(status_code=503)  # Telegram повторит — не 200 при перегрузке
     try:
         data = await request.json()
@@ -207,6 +208,7 @@ async def webhook_client(request: Request):
     if not CLIENT_TOKEN:
         return Response(status_code=500)
     if not can_accept_db_request():
+        log.warning("webhook/client: 503 — слоты БД заняты")
         return Response(status_code=503)  # Telegram повторит
     try:
         data = await request.json()
