@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Обработчики ботов — общая логика для админ и клиент."""
 import os
+import asyncio
 
 # Клиентский бот для рассылок и отправки кодов после оплаты (устанавливается из main.py)
 _client_bot = None
@@ -16,8 +17,10 @@ from telegram.error import BadRequest, TimedOut, NetworkError
 
 try:
     from psycopg2.pool import PoolError
+    from psycopg2 import OperationalError
 except ImportError:
-    PoolError = type("PoolError", (Exception,), {})  # если psycopg2 нет
+    PoolError = type("PoolError", (Exception,), {})
+    OperationalError = type("OperationalError", (Exception,), {})
 from telegram.ext import (
     Application, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler,
     filters,
@@ -62,6 +65,19 @@ def _is_owner(user_id: int) -> bool:
 
 def _is_admin(user_id: int) -> bool:
     return user_id in get_all_admin_ids() or is_appointed_admin(user_id)
+
+
+async def _retry_db(func, *args, max_attempts=4, delay=3, **kwargs):
+    """Повтор при PoolError/OperationalError — запрос в очереди, не падаем."""
+    last_err = None
+    for attempt in range(max_attempts):
+        try:
+            return await asyncio.to_thread(func, *args, **kwargs)
+        except (PoolError, OperationalError) as e:
+            last_err = e
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(delay)
+    raise last_err
 
 
 def _main_menu_keyboard(is_owner: bool):
@@ -565,11 +581,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except ValueError:
                 return
         try:
-            info = get_client_full_info(uid, un_param) if un_param else get_client_full_info(uid)
-        except PoolError:
+            info = await _retry_db(get_client_full_info, uid, un_param) if un_param else await _retry_db(get_client_full_info, uid)
+        except (PoolError, OperationalError):
             await query.edit_message_text(
-                "⚠️ Сервер перегружен. Подождите минуту и попробуйте снова.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К списку", callback_data="list_clients")]])
+                "⚠️ Сервер занят. Ваш запрос в очереди — нажмите «Повторить» через 15–30 сек.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Повторить", callback_data=data)],
+                    [InlineKeyboardButton("◀️ К списку", callback_data="list_clients")]
+                ])
             )
             return
         if not info:
@@ -1433,22 +1452,37 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     _log = logging.getLogger(__name__)
     if isinstance(context.error, (TimedOut, NetworkError)):
         return
-    # PoolError — показываем сообщение (callback или message)
-    if isinstance(context.error, PoolError):
-        _log.error("PoolError (Сервер перегружен): %s", context.error)
+    # PoolError / OperationalError (too many connections) — не крашим
+    err = context.error
+    is_db_overload = isinstance(err, PoolError) or (
+        hasattr(err, "__class__") and "OperationalError" in type(err).__name__ and ("connection" in str(err).lower() or "too many" in str(err).lower())
+    )
+    if is_db_overload:
+        _log.warning("DB overload: %s", err)
         try:
             q = getattr(update, "callback_query", None)
             msg = getattr(update, "message", None)
-            err_text = "⚠️ Сервер перегружен. Подождите минуту и попробуйте снова."
+            err_text = "⚠️ Сервер занят. Ваш запрос в очереди — нажмите «Повторить» через 15–30 сек."
+            retry_data = q.data if q else "main_menu"
+            kb = [[InlineKeyboardButton("🔄 Повторить", callback_data=retry_data)], [InlineKeyboardButton("◀️ Меню", callback_data="main_menu")]]
             if q:
-                await q.edit_message_text(err_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="main_menu")]]))
+                await q.edit_message_text(err_text, reply_markup=InlineKeyboardMarkup(kb))
             elif msg:
-                await msg.reply_text(err_text)
-        except Exception:
-            pass
-        return
+                await msg.reply_text(err_text, reply_markup=InlineKeyboardMarkup(kb))
+        except Exception as e:
+            _log.debug("Error handler: %s", e)
+        return  # не пробрасываем — бот продолжает работать
     _log.exception("Handler error: %s", context.error)
-    raise context.error
+    try:
+        q = getattr(update, "callback_query", None)
+        msg = getattr(update, "message", None)
+        if q:
+            await q.edit_message_text("⚠️ Ошибка. Нажмите «Меню» и попробуйте снова.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="main_menu")]]))
+        elif msg:
+            await msg.reply_text("⚠️ Ошибка. Попробуйте снова.")
+    except Exception:
+        pass
+    return  # не крашим даже при других ошибках
 
 
 def build_admin_app(token: str) -> Application:
