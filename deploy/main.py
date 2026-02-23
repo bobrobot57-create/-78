@@ -245,9 +245,9 @@ async def _notify_admin_payment(user_id: int, amount: float, days: int, system: 
 
 async def run():
     global admin_app, client_app
-    # Пул потоков для asyncio.to_thread
+    # Railway Free: 0.5 GB RAM, 1 vCPU — минимум потоков
     import concurrent.futures
-    pool_size = int(os.environ.get("THREAD_POOL_SIZE", "32"))
+    pool_size = int(os.environ.get("THREAD_POOL_SIZE", "6"))
     asyncio.get_event_loop().set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=pool_size))
     init_db()
 

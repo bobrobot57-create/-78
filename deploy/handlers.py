@@ -1431,16 +1431,28 @@ async def client_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     if isinstance(context.error, (TimedOut, NetworkError)):
         return
+    # PoolError — показываем сообщение, иначе клик «ничего не делает»
+    if isinstance(context.error, PoolError):
+        try:
+            q = getattr(update, "callback_query", None)
+            if q:
+                await q.edit_message_text(
+                    "⚠️ Сервер перегружен. Подождите минуту и попробуйте снова.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="main_menu")]])
+                )
+        except Exception:
+            pass
+        return
     raise context.error
 
 
 def build_admin_app(token: str) -> Application:
-    # concurrent_updates(8) — семафор в db.py ограничивает одновременные запросы
+    # Railway Free: 0.5 GB RAM — минимум параллельных обработчиков
     app = (
         Application.builder()
         .token(token)
         .updater(None)
-        .concurrent_updates(8)
+        .concurrent_updates(3)
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
@@ -1467,7 +1479,7 @@ def build_client_app(token: str) -> Application:
         Application.builder()
         .token(token)
         .updater(None)
-        .concurrent_updates(8)
+        .concurrent_updates(3)
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
