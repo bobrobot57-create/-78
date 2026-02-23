@@ -1,13 +1,100 @@
 # -*- coding: utf-8 -*-
-"""Схема БД: коды, активации, HWID."""
+"""Схема БД: коды, активации, HWID. Поддержка SQLite и PostgreSQL (DATABASE_URL)."""
 import sqlite3
 import os
+import re
 from contextlib import contextmanager
 
-DB_PATH = os.environ.get("DB_PATH", "voicer_licenses.db")
+_DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+_USE_PG = bool(_DATABASE_URL and "postgres" in _DATABASE_URL.lower())
+
+# DB_PATH: для SQLite — явно задай или используй Railway Volume (RAILWAY_VOLUME_MOUNT_PATH)
+def _get_db_path() -> str:
+    if os.environ.get("DB_PATH"):
+        return os.environ["DB_PATH"]
+    mount = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+    if mount:
+        return os.path.join(mount, "voicer_licenses.db")
+    return "voicer_licenses.db"
+
+DB_PATH = _get_db_path()
+
+
+def _pg_adapt_sql(sql: str) -> str:
+    """Преобразует SQLite-синтаксис в PostgreSQL."""
+    sql = sql.replace("?", "%s")
+    sql = sql.replace("datetime('now')", "CURRENT_TIMESTAMP")
+    sql = re.sub(r"datetime\('now',\s*'-1 hour'\)", "CURRENT_TIMESTAMP - INTERVAL '1 hour'", sql)
+    # INSERT OR IGNORE
+    if "INSERT OR IGNORE" in sql.upper():
+        sql = sql.replace("INSERT OR IGNORE", "INSERT")
+        if "INTO settings " in sql:
+            sql = re.sub(r"\)\s*$", ") ON CONFLICT (key) DO NOTHING", sql)
+        elif "INTO pending_users " in sql:
+            sql = re.sub(r"\)\s*$", ") ON CONFLICT (username) DO NOTHING", sql)
+        elif "INTO users " in sql:
+            sql = re.sub(r"\)\s*$", ") ON CONFLICT (telegram_id) DO NOTHING", sql)
+        elif "INTO referrals " in sql:
+            sql = re.sub(r"\)\s*$", ") ON CONFLICT (referred_id) DO NOTHING", sql)
+    # INSERT OR REPLACE
+    if "INSERT OR REPLACE" in sql.upper():
+        sql = sql.replace("INSERT OR REPLACE", "INSERT")
+        if "INTO admins " in sql:
+            sql = re.sub(r"\)\s*$", ") ON CONFLICT (telegram_id) DO UPDATE SET username=EXCLUDED.username, added_by=EXCLUDED.added_by", sql)
+        elif "INTO pending_code_assign " in sql:
+            sql = re.sub(r"\)\s*$", ") ON CONFLICT (admin_id) DO UPDATE SET code=EXCLUDED.code, created_at=EXCLUDED.created_at", sql)
+    return sql
+
+
+class _PgCursorWrapper:
+    """Обёртка курсора для PostgreSQL: конвертирует ? в %s и INSERT OR IGNORE/REPLACE."""
+    def __init__(self, cur):
+        self._cur = cur
+        self._last_inserted_id = None
+
+    def execute(self, sql, params=None):
+        self._last_inserted_id = None
+        sql = _pg_adapt_sql(sql)
+        if params:
+            self._cur.execute(sql, params)
+        else:
+            self._cur.execute(sql)
+        # Для INSERT с RETURNING сохраняем id
+        if "RETURNING" in sql.upper():
+            row = self._cur.fetchone()
+            if row:
+                self._last_inserted_id = row[0]
+        return self
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+    def fetchall(self):
+        return self._cur.fetchall()
+
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
+    @property
+    def lastrowid(self):
+        if self._last_inserted_id is not None:
+            return self._last_inserted_id
+        return self._cur.lastrowid if hasattr(self._cur, 'lastrowid') else None
 
 
 def _get_conn():
+    if _USE_PG:
+        import psycopg2
+        conn = psycopg2.connect(_DATABASE_URL)
+        orig_cursor = conn.cursor
+
+        def _cursor():
+            c = orig_cursor()
+            return _PgCursorWrapper(c)
+
+        conn.cursor = _cursor
+        return conn
     return sqlite3.connect(DB_PATH)
 
 
@@ -24,154 +111,272 @@ def get_db():
         conn.close()
 
 
+def _alter_safe(cur, sql):
+    """Выполнить ALTER TABLE, игнорируя ошибку «колонка уже есть»."""
+    try:
+        cur.execute(sql)
+    except (sqlite3.OperationalError, Exception):
+        pass
+
+
 def init_db():
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS codes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                code TEXT UNIQUE NOT NULL,
-                days INTEGER NOT NULL,
-                is_developer INTEGER DEFAULT 0,
-                assigned_username TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        try:
-            cur.execute("ALTER TABLE codes ADD COLUMN assigned_username TEXT")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            cur.execute("ALTER TABLE users ADD COLUMN is_gift INTEGER DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            cur.execute("ALTER TABLE users ADD COLUMN is_blocked INTEGER DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS activations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                code_id INTEGER NOT NULL,
-                hwid TEXT NOT NULL,
-                installation_id TEXT,
-                user_telegram_id INTEGER,
-                activated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                expires_at TEXT,
-                revoked INTEGER DEFAULT 0,
-                FOREIGN KEY (code_id) REFERENCES codes(id)
-            )
-        """)
-        try:
-            cur.execute("ALTER TABLE activations ADD COLUMN installation_id TEXT")
-        except sqlite3.OperationalError:
-            pass
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_activations_hwid ON activations(hwid)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_activations_code ON activations(code_id)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_codes_code ON codes(code)")
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS admins (
-                telegram_id INTEGER PRIMARY KEY,
-                username TEXT,
-                added_by INTEGER NOT NULL,
-                added_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        # Пользователи клиентского бота (кто писал)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                telegram_id INTEGER PRIMARY KEY,
-                username TEXT,
-                referred_by INTEGER,
-                is_partner INTEGER DEFAULT 0,
-                is_gift INTEGER DEFAULT 0,
-                is_blocked INTEGER DEFAULT 0,
-                custom_discount_pct REAL,
-                first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (referred_by) REFERENCES users(telegram_id)
-            )
-        """)
-        # Рефералы: кто кого привёл
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS referrals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                referrer_id INTEGER NOT NULL,
-                referred_id INTEGER NOT NULL UNIQUE,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (referrer_id) REFERENCES users(telegram_id),
-                FOREIGN KEY (referred_id) REFERENCES users(telegram_id)
-            )
-        """)
-        # Платежи (подтверждённые админом или платёжными системами)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS payments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_telegram_id INTEGER NOT NULL,
-                amount_usd REAL NOT NULL,
-                plan_days INTEGER NOT NULL,
-                code_id INTEGER,
-                status TEXT DEFAULT 'confirmed',
-                merchant_order_id TEXT,
-                payment_system TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (code_id) REFERENCES codes(id)
-            )
-        """)
-        for col in ("merchant_order_id", "payment_system"):
-            try:
-                cur.execute(f"ALTER TABLE payments ADD COLUMN {col} TEXT")
-            except sqlite3.OperationalError:
-                pass
-        # Реферальные выплаты (сколько кому должны)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS referral_payouts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                referrer_id INTEGER NOT NULL,
-                payment_id INTEGER NOT NULL,
-                amount_usd REAL NOT NULL,
-                percent REAL NOT NULL,
-                status TEXT DEFAULT 'pending',
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                paid_at TEXT,
-                FOREIGN KEY (referrer_id) REFERENCES users(telegram_id),
-                FOREIGN KEY (payment_id) REFERENCES payments(id)
-            )
-        """)
-        # Настройки (приветствие, цены, ссылка на софт)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_referral_payouts_referrer ON referral_payouts(referrer_id)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_telegram_id)")
-        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('welcome_message', '🎙 *VoiceLab* — озвучка текста\n\nОплатите подписку и напишите «Оплатил».')")
-        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('price_30', '15')")
-        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('price_60', '25')")
-        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('price_90', '35')")
-        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('software_url', 'https://drive.google.com/drive/folders/18hdLnr_zPo7_Eao9thFQkp2H4nbgtLIa')")
-        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payments_enabled', '0')")
-        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('manual_payment_contact', '@Drykey')")
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS pending_code_assign (
-                admin_id INTEGER, code TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (admin_id)
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS pending_users (
-                username TEXT PRIMARY KEY,
-                is_blocked INTEGER DEFAULT 0,
-                is_partner INTEGER DEFAULT 0,
-                is_gift INTEGER DEFAULT 0,
-                custom_discount_pct REAL,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+        if _USE_PG:
+            _init_db_pg(cur)
+        else:
+            _init_db_sqlite(cur)
         conn.commit()
+
+
+def _init_db_sqlite(cur):
+    """Схема для SQLite."""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT UNIQUE NOT NULL,
+            days INTEGER NOT NULL,
+            is_developer INTEGER DEFAULT 0,
+            assigned_username TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    _alter_safe(cur, "ALTER TABLE codes ADD COLUMN assigned_username TEXT")
+    _alter_safe(cur, "ALTER TABLE users ADD COLUMN is_gift INTEGER DEFAULT 0")
+    _alter_safe(cur, "ALTER TABLE users ADD COLUMN is_blocked INTEGER DEFAULT 0")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS activations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code_id INTEGER NOT NULL,
+            hwid TEXT NOT NULL,
+            installation_id TEXT,
+            user_telegram_id INTEGER,
+            activated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            expires_at TEXT,
+            revoked INTEGER DEFAULT 0,
+            FOREIGN KEY (code_id) REFERENCES codes(id)
+        )
+    """)
+    _alter_safe(cur, "ALTER TABLE activations ADD COLUMN installation_id TEXT")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_activations_hwid ON activations(hwid)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_activations_code ON activations(code_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_codes_code ON codes(code)")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admins (
+            telegram_id INTEGER PRIMARY KEY,
+            username TEXT,
+            added_by INTEGER NOT NULL,
+            added_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            telegram_id INTEGER PRIMARY KEY,
+            username TEXT,
+            referred_by INTEGER,
+            is_partner INTEGER DEFAULT 0,
+            is_gift INTEGER DEFAULT 0,
+            is_blocked INTEGER DEFAULT 0,
+            custom_discount_pct REAL,
+            first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (referred_by) REFERENCES users(telegram_id)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS referrals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            referrer_id INTEGER NOT NULL,
+            referred_id INTEGER NOT NULL UNIQUE,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (referrer_id) REFERENCES users(telegram_id),
+            FOREIGN KEY (referred_id) REFERENCES users(telegram_id)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_telegram_id INTEGER NOT NULL,
+            amount_usd REAL NOT NULL,
+            plan_days INTEGER NOT NULL,
+            code_id INTEGER,
+            status TEXT DEFAULT 'confirmed',
+            merchant_order_id TEXT,
+            payment_system TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (code_id) REFERENCES codes(id)
+        )
+    """)
+    for col in ("merchant_order_id", "payment_system"):
+        _alter_safe(cur, f"ALTER TABLE payments ADD COLUMN {col} TEXT")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS referral_payouts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            referrer_id INTEGER NOT NULL,
+            payment_id INTEGER NOT NULL,
+            amount_usd REAL NOT NULL,
+            percent REAL NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            paid_at TEXT,
+            FOREIGN KEY (referrer_id) REFERENCES users(telegram_id),
+            FOREIGN KEY (payment_id) REFERENCES payments(id)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_referral_payouts_referrer ON referral_payouts(referrer_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_telegram_id)")
+    for k, v in [
+        ("welcome_message", "🎙 *VoiceLab* — озвучка текста\n\nОплатите подписку и напишите «Оплатил»."),
+        ("price_30", "15"), ("price_60", "25"), ("price_90", "35"),
+        ("software_url", "https://drive.google.com/drive/folders/18hdLnr_zPo7_Eao9thFQkp2H4nbgtLIa"),
+        ("payments_enabled", "0"), ("manual_payment_contact", "@Drykey"),
+    ]:
+        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pending_code_assign (
+            admin_id INTEGER, code TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (admin_id)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pending_users (
+            username TEXT PRIMARY KEY,
+            is_blocked INTEGER DEFAULT 0,
+            is_partner INTEGER DEFAULT 0,
+            is_gift INTEGER DEFAULT 0,
+            custom_discount_pct REAL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+def _init_db_pg(cur):
+    """Схема для PostgreSQL."""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS codes (
+            id SERIAL PRIMARY KEY,
+            code TEXT UNIQUE NOT NULL,
+            days INTEGER NOT NULL,
+            is_developer INTEGER DEFAULT 0,
+            assigned_username TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    _alter_safe(cur, "ALTER TABLE codes ADD COLUMN assigned_username TEXT")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS activations (
+            id SERIAL PRIMARY KEY,
+            code_id INTEGER NOT NULL REFERENCES codes(id),
+            hwid TEXT NOT NULL,
+            installation_id TEXT,
+            user_telegram_id INTEGER,
+            activated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TEXT,
+            revoked INTEGER DEFAULT 0
+        )
+    """)
+    _alter_safe(cur, "ALTER TABLE activations ADD COLUMN installation_id TEXT")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_activations_hwid ON activations(hwid)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_activations_code ON activations(code_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_codes_code ON codes(code)")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admins (
+            telegram_id BIGINT PRIMARY KEY,
+            username TEXT,
+            added_by BIGINT NOT NULL,
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            telegram_id BIGINT PRIMARY KEY,
+            username TEXT,
+            referred_by BIGINT REFERENCES users(telegram_id),
+            is_partner INTEGER DEFAULT 0,
+            is_gift INTEGER DEFAULT 0,
+            is_blocked INTEGER DEFAULT 0,
+            custom_discount_pct REAL,
+            first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    _alter_safe(cur, "ALTER TABLE users ADD COLUMN is_gift INTEGER DEFAULT 0")
+    _alter_safe(cur, "ALTER TABLE users ADD COLUMN is_blocked INTEGER DEFAULT 0")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS referrals (
+            id SERIAL PRIMARY KEY,
+            referrer_id BIGINT NOT NULL REFERENCES users(telegram_id),
+            referred_id BIGINT NOT NULL UNIQUE REFERENCES users(telegram_id),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS payments (
+            id SERIAL PRIMARY KEY,
+            user_telegram_id BIGINT NOT NULL,
+            amount_usd REAL NOT NULL,
+            plan_days INTEGER NOT NULL,
+            code_id INTEGER REFERENCES codes(id),
+            status TEXT DEFAULT 'confirmed',
+            merchant_order_id TEXT,
+            payment_system TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    for col in ("merchant_order_id", "payment_system"):
+        _alter_safe(cur, f"ALTER TABLE payments ADD COLUMN {col} TEXT")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS referral_payouts (
+            id SERIAL PRIMARY KEY,
+            referrer_id BIGINT NOT NULL REFERENCES users(telegram_id),
+            payment_id INTEGER NOT NULL REFERENCES payments(id),
+            amount_usd REAL NOT NULL,
+            percent REAL NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            paid_at TEXT
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_referral_payouts_referrer ON referral_payouts(referrer_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_telegram_id)")
+    for k, v in [
+        ("welcome_message", "🎙 *VoiceLab* — озвучка текста\n\nОплатите подписку и напишите «Оплатил»."),
+        ("price_30", "15"), ("price_60", "25"), ("price_90", "35"),
+        ("software_url", "https://drive.google.com/drive/folders/18hdLnr_zPo7_Eao9thFQkp2H4nbgtLIa"),
+        ("payments_enabled", "0"), ("manual_payment_contact", "@Drykey"),
+    ]:
+        cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", (k, v))
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pending_code_assign (
+            admin_id BIGINT PRIMARY KEY,
+            code TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pending_users (
+            username TEXT PRIMARY KEY,
+            is_blocked INTEGER DEFAULT 0,
+            is_partner INTEGER DEFAULT 0,
+            is_gift INTEGER DEFAULT 0,
+            custom_discount_pct REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
 
 def get_owner_id():
@@ -628,12 +833,20 @@ def add_payment(user_telegram_id: int, amount_usd: float, plan_days: int, code_i
     """Записывает платёж и начисляет реферальные выплаты. Возвращает payment_id."""
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute(
-            """INSERT INTO payments (user_telegram_id, amount_usd, plan_days, code_id, merchant_order_id, payment_system)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (user_telegram_id, amount_usd, plan_days, code_id, merchant_order_id, payment_system)
-        )
-        pid = cur.lastrowid
+        if _USE_PG:
+            cur.execute(
+                """INSERT INTO payments (user_telegram_id, amount_usd, plan_days, code_id, merchant_order_id, payment_system)
+                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                (user_telegram_id, amount_usd, plan_days, code_id, merchant_order_id, payment_system)
+            )
+            pid = cur.lastrowid
+        else:
+            cur.execute(
+                """INSERT INTO payments (user_telegram_id, amount_usd, plan_days, code_id, merchant_order_id, payment_system)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (user_telegram_id, amount_usd, plan_days, code_id, merchant_order_id, payment_system)
+            )
+            pid = cur.lastrowid
         u = get_user(user_telegram_id)
         if u and u.get("referred_by"):
             referrer_id = u["referred_by"]
@@ -661,7 +874,7 @@ def get_referral_stats() -> list:
                 WHERE u.telegram_id IN (SELECT referrer_id FROM referrals)
                 ORDER BY ref_count DESC
             """)
-        except sqlite3.OperationalError:
+        except (sqlite3.OperationalError, Exception):
             cur.execute("""
                 SELECT u.telegram_id, u.username, u.is_partner, u.custom_discount_pct,
                        (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.telegram_id) as ref_count,
