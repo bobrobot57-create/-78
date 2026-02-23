@@ -101,11 +101,28 @@ class _PgConnWrapper:
         self._conn.close()
 
 
+# Пул соединений PostgreSQL — выдерживает 200+ одновременных запросов без исчерпания лимита
+_PG_POOL = None
+
+
+def _get_pg_pool():
+    global _PG_POOL
+    if _PG_POOL is None and _USE_PG:
+        import psycopg2.pool
+        minconn = 5
+        maxconn = int(os.environ.get("DB_POOL_SIZE", "80"))  # До 80 соединений в пуле
+        _PG_POOL = psycopg2.pool.ThreadedConnectionPool(minconn, maxconn, _DATABASE_URL)
+    return _PG_POOL
+
+
 def _get_conn():
     if _USE_PG:
+        pool = _get_pg_pool()
+        if pool:
+            conn = pool.getconn()
+            return _PgConnWrapper(conn)
         import psycopg2
-        conn = psycopg2.connect(_DATABASE_URL)
-        return _PgConnWrapper(conn)
+        return _PgConnWrapper(psycopg2.connect(_DATABASE_URL))
     return sqlite3.connect(DB_PATH)
 
 

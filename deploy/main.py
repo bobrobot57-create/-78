@@ -63,7 +63,7 @@ async def api_check(request: Request):
     if not code or not hwid:
         return JSONResponse({"ok": False, "error": "missing_code_or_hwid"}, status_code=400)
     try:
-        result = check_license(code, hwid, installation_id)
+        result = await asyncio.to_thread(check_license, code, hwid, installation_id)
     except Exception as e:
         log.error("check_license: %s\n%s", e, traceback.format_exc())
         return JSONResponse({"ok": False, "error": "server_error"}, status_code=500)
@@ -71,7 +71,7 @@ async def api_check(request: Request):
         return JSONResponse({"ok": True, "expires_at": result["expires_at"], "is_developer": result["is_developer"]})
     if result["error"] == "not_activated":
         try:
-            act = activate_code(code, hwid, installation_id)
+            act = await asyncio.to_thread(activate_code, code, hwid, installation_id)
         except Exception as e:
             log.error("activate_code: %s\n%s", e, traceback.format_exc())
             return JSONResponse({"ok": False, "error": "server_error"}, status_code=500)
@@ -115,7 +115,7 @@ async def payment_freekassa(request: Request):
     if not verify_freekassa_webhook(merchant_id, amount, order_id, sign_received):
         log.warning("FreeKassa webhook: bad sign")
         return Response("Error: bad sign", status_code=403)
-    if payment_exists_by_order_id(order_id):
+    if await asyncio.to_thread(payment_exists_by_order_id, order_id):
         log.info("FreeKassa webhook: duplicate order_id %s", order_id)
         return Response("YES", status_code=200)
     try:
@@ -125,9 +125,9 @@ async def payment_freekassa(request: Request):
     except (ValueError, TypeError):
         return Response("Error: invalid params", status_code=400)
     try:
-        new_code = create_code(days=days)
-        add_payment(user_telegram_id=user_id, amount_usd=amount_float, plan_days=days,
-                    merchant_order_id=order_id, payment_system="freekassa")
+        new_code = await asyncio.to_thread(create_code, days=days)
+        await asyncio.to_thread(add_payment, user_telegram_id=user_id, amount_usd=amount_float, plan_days=int(days),
+                               merchant_order_id=order_id, payment_system="freekassa")
         bot = get_client_bot()
         if bot:
             msg = f"✅ *Оплата получена!*\n\nВаш ключ на {days} дней:\n`{new_code}`\n\nСкопируйте его и вставьте в программу VoiceLab."
@@ -158,7 +158,7 @@ async def payment_cryptomus(request: Request):
     order_id = body.get("order_id")
     if not order_id:
         return Response("Error: no order_id", status_code=400)
-    if payment_exists_by_order_id(order_id):
+    if await asyncio.to_thread(payment_exists_by_order_id, order_id):
         log.info("Cryptomus webhook: duplicate order_id %s", order_id)
         return Response("OK", status_code=200)
     add_data = body.get("additional_data")
@@ -179,9 +179,9 @@ async def payment_cryptomus(request: Request):
     except (ValueError, TypeError):
         amount_float = 0
     try:
-        new_code = create_code(days=int(days))
-        add_payment(user_telegram_id=int(user_id), amount_usd=amount_float, plan_days=int(days),
-                    merchant_order_id=order_id, payment_system="cryptomus")
+        new_code = await asyncio.to_thread(create_code, days=int(days))
+        await asyncio.to_thread(add_payment, user_telegram_id=int(user_id), amount_usd=amount_float, plan_days=int(days),
+                               merchant_order_id=order_id, payment_system="cryptomus")
         bot = get_client_bot()
         if bot:
             msg = f"✅ *Оплата получена!*\n\nВаш ключ на {days} дней:\n`{new_code}`\n\nСкопируйте его и вставьте в программу VoiceLab."
@@ -238,6 +238,10 @@ async def _notify_admin_payment(user_id: int, amount: float, days: int, system: 
 
 async def run():
     global admin_app, client_app
+    # Пул потоков для sync-операций (check_license, activate_code) — выдерживает 200+ одновременных
+    import concurrent.futures
+    pool_size = int(os.environ.get("THREAD_POOL_SIZE", "100"))
+    asyncio.get_event_loop().set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=pool_size))
     init_db()
 
     if not WEBHOOK_BASE:

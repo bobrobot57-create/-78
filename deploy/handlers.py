@@ -1372,7 +1372,18 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 
 def build_admin_app(token: str) -> Application:
-    app = Application.builder().token(token).updater(None).build()
+    app = (
+        Application.builder()
+        .token(token)
+        .updater(None)
+        .concurrent_updates(True)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(30)
+        .connection_pool_size(64)
+        .build()
+    )
     app.add_error_handler(_error_handler)
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("newcode", cmd_newcode))
@@ -1388,7 +1399,18 @@ def build_admin_app(token: str) -> Application:
 
 
 def build_client_app(token: str) -> Application:
-    app = Application.builder().token(token).updater(None).build()
+    app = (
+        Application.builder()
+        .token(token)
+        .updater(None)
+        .concurrent_updates(True)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(30)
+        .connection_pool_size(64)
+        .build()
+    )
     app.add_error_handler(_error_handler)
     app.add_handler(CommandHandler("start", client_start))
     app.add_handler(CommandHandler("mycode", client_mycode))
