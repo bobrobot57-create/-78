@@ -83,18 +83,29 @@ class _PgCursorWrapper:
         return self._cur.lastrowid if hasattr(self._cur, 'lastrowid') else None
 
 
+class _PgConnWrapper:
+    """Обёртка соединения: cursor() возвращает _PgCursorWrapper (psycopg2.cursor read-only)."""
+    def __init__(self, conn):
+        self._conn = conn
+
+    def cursor(self):
+        return _PgCursorWrapper(self._conn.cursor())
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+
 def _get_conn():
     if _USE_PG:
         import psycopg2
         conn = psycopg2.connect(_DATABASE_URL)
-        orig_cursor = conn.cursor
-
-        def _cursor():
-            c = orig_cursor()
-            return _PgCursorWrapper(c)
-
-        conn.cursor = _cursor
-        return conn
+        return _PgConnWrapper(conn)
     return sqlite3.connect(DB_PATH)
 
 
