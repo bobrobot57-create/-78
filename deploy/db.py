@@ -41,6 +41,14 @@ def init_db():
             cur.execute("ALTER TABLE codes ADD COLUMN assigned_username TEXT")
         except sqlite3.OperationalError:
             pass
+        try:
+            cur.execute("ALTER TABLE users ADD COLUMN is_gift INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cur.execute("ALTER TABLE users ADD COLUMN is_blocked INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         cur.execute("""
             CREATE TABLE IF NOT EXISTS activations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,6 +84,8 @@ def init_db():
                 username TEXT,
                 referred_by INTEGER,
                 is_partner INTEGER DEFAULT 0,
+                is_gift INTEGER DEFAULT 0,
+                is_blocked INTEGER DEFAULT 0,
                 custom_discount_pct REAL,
                 first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (referred_by) REFERENCES users(telegram_id)
@@ -145,6 +155,12 @@ def init_db():
         cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('software_url', 'https://drive.google.com/drive/folders/18hdLnr_zPo7_Eao9thFQkp2H4nbgtLIa')")
         cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payments_enabled', '0')")
         cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('manual_payment_contact', '@Drykey')")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS pending_code_assign (
+                admin_id INTEGER, code TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (admin_id)
+            )
+        """)
         conn.commit()
 
 
@@ -227,6 +243,28 @@ def get_code_by_value(code: str) -> dict | None:
         if not row:
             return None
         return {"id": row[0], "code": row[1], "days": row[2], "is_developer": bool(row[3]), "assigned_username": row[4] if len(row) > 4 else None}
+
+
+def set_pending_code_assign(admin_id: int, code: str):
+    """Сохранить ожидающую привязку кода (fallback при потере context)."""
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT OR REPLACE INTO pending_code_assign (admin_id, code, created_at) VALUES (?, ?, datetime('now'))", (admin_id, code))
+
+
+def get_pending_code_assign(admin_id: int) -> str | None:
+    """Получить код, ожидающий привязки (старше 1 часа — удалить)."""
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT code FROM pending_code_assign WHERE admin_id = ? AND datetime(created_at) > datetime('now', '-1 hour')", (admin_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def clear_pending_code_assign(admin_id: int):
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM pending_code_assign WHERE admin_id = ?", (admin_id,))
 
 
 def set_code_assigned(code: str, username: str | None) -> bool:
@@ -383,7 +421,35 @@ def ensure_user(telegram_id: int, username: str | None = None, referred_by: int 
 def set_partner(telegram_id: int, is_partner: bool) -> bool:
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("UPDATE users SET is_partner = ? WHERE telegram_id = ?", (1 if is_partner else 0, telegram_id))
+        cur.execute("UPDATE users SET is_partner = ?, is_gift = 0 WHERE telegram_id = ?", (1 if is_partner else 0, telegram_id))
+        return cur.rowcount > 0
+
+
+def set_gift(telegram_id: int, is_gift: bool) -> bool:
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET is_gift = ?, is_partner = 0 WHERE telegram_id = ?", (1 if is_gift else 0, telegram_id))
+        return cur.rowcount > 0
+
+
+def set_client_status(telegram_id: int, status: str) -> bool:
+    """status: client|partner|gift"""
+    if status == "partner":
+        return set_partner(telegram_id, True)
+    if status == "gift":
+        return set_gift(telegram_id, True)
+    if status == "client":
+        with get_db() as conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET is_partner = 0, is_gift = 0 WHERE telegram_id = ?", (telegram_id,))
+            return cur.rowcount > 0
+    return False
+
+
+def set_blocked(telegram_id: int, is_blocked: bool) -> bool:
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET is_blocked = ? WHERE telegram_id = ?", (1 if is_blocked else 0, telegram_id))
         return cur.rowcount > 0
 
 
@@ -411,21 +477,41 @@ def get_user_by_username(username: str) -> dict | None:
 def get_user(telegram_id: int) -> dict | None:
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT telegram_id, username, referred_by, is_partner, custom_discount_pct, first_seen FROM users WHERE telegram_id = ?", (telegram_id,))
+        try:
+            cur.execute("SELECT telegram_id, username, referred_by, is_partner, custom_discount_pct, first_seen, COALESCE(is_gift,0), COALESCE(is_blocked,0) FROM users WHERE telegram_id = ?", (telegram_id,))
+        except sqlite3.OperationalError:
+            cur.execute("SELECT telegram_id, username, referred_by, is_partner, custom_discount_pct, first_seen FROM users WHERE telegram_id = ?", (telegram_id,))
         row = cur.fetchone()
         if not row:
             return None
-        return {"telegram_id": row[0], "username": row[1], "referred_by": row[2], "is_partner": bool(row[3]), "custom_discount_pct": row[4], "first_seen": row[5] if len(row) > 5 else None}
+        return {
+            "telegram_id": row[0], "username": row[1], "referred_by": row[2], "is_partner": bool(row[3]),
+            "custom_discount_pct": row[4], "first_seen": row[5] if len(row) > 5 else None,
+            "is_gift": bool(row[6]) if len(row) > 6 else False,
+            "is_blocked": bool(row[7]) if len(row) > 7 else False,
+        }
 
 
 def get_referral_percent(telegram_id: int) -> float:
-    """10% клиент, 20% партнёр. custom_discount_pct переопределяет."""
+    """10% клиент/подарок, 20% партнёр. custom_discount_pct переопределяет."""
     u = get_user(telegram_id)
     if not u:
         return 10.0
     if u.get("custom_discount_pct") is not None:
         return float(u["custom_discount_pct"])
     return 20.0 if u.get("is_partner") else 10.0
+
+
+def get_user_status_label(telegram_id: int) -> str:
+    """Клиент/Партнёр/Подарок."""
+    u = get_user(telegram_id)
+    if not u:
+        return "Клиент"
+    if u.get("is_blocked"):
+        return "Заблокирован"
+    if u.get("is_gift"):
+        return "Подарок"
+    return "Партнёр" if u.get("is_partner") else "Клиент"
 
 
 def list_referrals(referrer_id: int) -> list:
@@ -480,23 +566,42 @@ def get_referral_stats() -> list:
     """Статистика по всем рефералам: кто сколько привёл, ставка, сколько должны."""
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("""
-            SELECT u.telegram_id, u.username, u.is_partner, u.custom_discount_pct,
-                   (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.telegram_id) as ref_count,
-                   (SELECT COALESCE(SUM(amount_usd), 0) FROM referral_payouts rp WHERE rp.referrer_id = u.telegram_id AND rp.status = 'pending') as pending
-            FROM users u
-            WHERE u.telegram_id IN (SELECT referrer_id FROM referrals)
-            ORDER BY ref_count DESC
-        """)
+        try:
+            cur.execute("""
+                SELECT u.telegram_id, u.username, u.is_partner, COALESCE(u.is_gift,0), u.custom_discount_pct,
+                       (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.telegram_id) as ref_count,
+                       (SELECT COALESCE(SUM(amount_usd), 0) FROM referral_payouts rp WHERE rp.referrer_id = u.telegram_id AND rp.status = 'pending') as pending
+                FROM users u
+                WHERE u.telegram_id IN (SELECT referrer_id FROM referrals)
+                ORDER BY ref_count DESC
+            """)
+        except sqlite3.OperationalError:
+            cur.execute("""
+                SELECT u.telegram_id, u.username, u.is_partner, u.custom_discount_pct,
+                       (SELECT COUNT(*) FROM referrals r WHERE r.referrer_id = u.telegram_id) as ref_count,
+                       (SELECT COALESCE(SUM(amount_usd), 0) FROM referral_payouts rp WHERE rp.referrer_id = u.telegram_id AND rp.status = 'pending') as pending
+                FROM users u
+                WHERE u.telegram_id IN (SELECT referrer_id FROM referrals)
+                ORDER BY ref_count DESC
+            """)
         rows = cur.fetchall()
     result = []
+    n_cols = len(rows[0]) if rows else 0
     for r in rows:
-        pct = r[3] if r[3] is not None else (20.0 if r[2] else 10.0)
-        result.append({
-            "telegram_id": r[0], "username": r[1], "is_partner": bool(r[2]),
-            "custom_discount_pct": r[3], "ref_count": r[4], "pending_usd": round(float(r[5] or 0), 2),
-            "percent": pct
-        })
+        if n_cols >= 7:
+            pct = r[4] if r[4] is not None else (20.0 if r[2] else 10.0)
+            result.append({
+                "telegram_id": r[0], "username": r[1], "is_partner": bool(r[2]), "is_gift": bool(r[3]),
+                "custom_discount_pct": r[4], "ref_count": r[5], "pending_usd": round(float(r[6] or 0), 2),
+                "percent": pct
+            })
+        else:
+            pct = r[3] if r[3] is not None else (20.0 if r[2] else 10.0)
+            result.append({
+                "telegram_id": r[0], "username": r[1], "is_partner": bool(r[2]), "is_gift": False,
+                "custom_discount_pct": r[3], "ref_count": r[4], "pending_usd": round(float(r[5] or 0), 2),
+                "percent": pct
+            })
     return result
 
 
@@ -524,12 +629,54 @@ def get_user_total_pending(telegram_id: int) -> float:
 def list_all_users() -> list:
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT telegram_id, username, referred_by, is_partner, first_seen FROM users ORDER BY first_seen DESC")
-        return [{"telegram_id": r[0], "username": r[1], "referred_by": r[2], "is_partner": bool(r[3]), "first_seen": r[4]} for r in cur.fetchall()]
+        try:
+            cur.execute("SELECT telegram_id, username, referred_by, is_partner, COALESCE(is_gift,0), COALESCE(is_blocked,0), first_seen FROM users ORDER BY first_seen DESC")
+        except sqlite3.OperationalError:
+            cur.execute("SELECT telegram_id, username, referred_by, is_partner, first_seen FROM users ORDER BY first_seen DESC")
+            return [{"telegram_id": r[0], "username": r[1], "referred_by": r[2], "is_partner": bool(r[3]), "is_gift": False, "is_blocked": False, "first_seen": r[4]} for r in cur.fetchall()]
+        return [{"telegram_id": r[0], "username": r[1], "referred_by": r[2], "is_partner": bool(r[3]), "is_gift": bool(r[4]) if len(r) > 4 else False, "is_blocked": bool(r[5]) if len(r) > 5 else False, "first_seen": r[6] if len(r) > 6 else None} for r in cur.fetchall()]
 
 
-def get_client_full_info(telegram_id: int) -> dict | None:
+def list_assigned_usernames_not_in_users() -> list:
+    """Юзернеймы с привязанными кодами, которых ещё нет в users."""
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT DISTINCT LOWER(REPLACE(COALESCE(c.assigned_username,''), '@', ''))
+            FROM codes c
+            WHERE c.assigned_username IS NOT NULL AND c.assigned_username != ''
+            AND NOT EXISTS (SELECT 1 FROM activations a WHERE a.code_id = c.id AND a.revoked = 0)
+            AND NOT EXISTS (SELECT 1 FROM users u WHERE LOWER(REPLACE(COALESCE(u.username,''), '@', '')) = LOWER(REPLACE(c.assigned_username, '@', '')))
+        """)
+        return [r[0] for r in cur.fetchall() if r[0]]
+
+
+def list_clients_with_extended(sort_by: str = "date") -> list:
+    """Все клиенты: из users + assigned (ещё не заходили). sort_by: date|name|status."""
+    users = list_all_users()
+    assigned = list_assigned_usernames_not_in_users()
+    seen = {str(u.get("username") or "").lower().lstrip("@") for u in users if u.get("username")}
+    for un in assigned:
+        if un and un not in seen:
+            users.append({"telegram_id": 0, "username": un, "referred_by": None, "is_partner": False, "is_gift": False, "is_blocked": False, "first_seen": None, "_assigned_only": True})
+    if sort_by == "name":
+        users.sort(key=lambda u: (u.get("username") or str(u["telegram_id"])).lower())
+    elif sort_by == "status":
+        def _st(u):
+            if u.get("is_blocked"): return 0
+            if u.get("is_partner"): return 1
+            if u.get("is_gift"): return 2
+            return 3
+        users.sort(key=_st)
+    else:
+        users.sort(key=lambda u: u.get("first_seen") or "", reverse=True)
+    return users
+
+
+def get_client_full_info(telegram_id: int, username: str | None = None) -> dict | None:
     """Полная информация о клиенте: профиль, подписка, рефералы, процент."""
+    if telegram_id == 0 and username:
+        return _get_client_info_assigned_only(username)
     u = get_user(telegram_id)
     if not u:
         return None
@@ -556,6 +703,8 @@ def get_client_full_info(telegram_id: int) -> dict | None:
         "referred_by": u.get("referred_by"),
         "referrer": referrer,
         "is_partner": u.get("is_partner", False),
+        "is_gift": u.get("is_gift", False),
+        "is_blocked": u.get("is_blocked", False),
         "custom_discount_pct": u.get("custom_discount_pct"),
         "first_seen": u.get("first_seen"),
         "ref_count": ref_count,
@@ -563,6 +712,29 @@ def get_client_full_info(telegram_id: int) -> dict | None:
         "percent": pct,
         "subscription": sub,
         "days_left": days_left,
+        "_assigned_only": False,
+    }
+
+
+def _get_client_info_assigned_only(username: str) -> dict:
+    """Инфо для пользователя, которому выдан код, но он ещё не заходил."""
+    sub = get_user_subscription_info(0, username)
+    return {
+        "telegram_id": 0,
+        "username": username,
+        "referred_by": None,
+        "referrer": None,
+        "is_partner": False,
+        "is_gift": False,
+        "is_blocked": False,
+        "custom_discount_pct": None,
+        "first_seen": None,
+        "ref_count": 0,
+        "pending_usd": 0,
+        "percent": 10,
+        "subscription": sub,
+        "days_left": None,
+        "_assigned_only": True,
     }
 
 
