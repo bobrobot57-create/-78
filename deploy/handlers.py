@@ -33,7 +33,10 @@ from db import (
 
 
 def _is_owner(user_id: int) -> bool:
-    return get_owner_id() is not None and user_id == get_owner_id()
+    """Полные права: владелец (первый в ADMIN_USER_IDS) или любой админ из admins."""
+    if get_owner_id() is not None and user_id == get_owner_id():
+        return True
+    return user_id in get_all_admin_ids() or is_appointed_admin(user_id)
 
 
 def _is_admin(user_id: int) -> bool:
@@ -86,7 +89,9 @@ def _build_codes_list(rows: list, page: int, total_pages: int, search: str, cont
         days_str = "∞" if not exp_raw or r["is_developer"] else (f"{max(0, (datetime.fromisoformat(exp_raw) - now).days)}д" if exp_raw else "?")
         rev = " ❌" if r.get("revoked") else ""
         lines.append(f"`{r['code']}` {dev} {acc} {status} {days_str}{rev}")
-        kb.append([InlineKeyboardButton("🔗", callback_data=f"a_{r['code']}"), InlineKeyboardButton("🗑", callback_data=f"d_{r['code']}")])
+        # Кнопка привязки только для свободных кодов — иначе перезапишем предыдущего клиента
+        assign_btn = [InlineKeyboardButton("🔗", callback_data=f"a_{r['code']}")] if not r.get("assigned_username") else []
+        kb.append(assign_btn + [InlineKeyboardButton("🗑", callback_data=f"d_{r['code']}")])
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("◀️", callback_data=f"list_codes:{page-1}"))

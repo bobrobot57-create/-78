@@ -146,6 +146,7 @@ def init_db():
             _init_db_pg(conn, cur)
         else:
             _init_db_sqlite(conn, cur)
+        _ensure_partner_admins_from_env(conn)
         conn.commit()
 
 
@@ -397,6 +398,22 @@ def _init_db_pg(conn, cur):
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+
+def _ensure_partner_admins_from_env(conn):
+    """Добавить партнёров из PARTNER_USER_IDS в admins (полные права как у владельца)."""
+    ids_str = os.environ.get("PARTNER_USER_IDS", "").strip()
+    if not ids_str:
+        return
+    owner = get_owner_id() or 0
+    cur = conn.cursor()
+    for part in ids_str.split(","):
+        part = part.strip()
+        if part and part.isdigit():
+            tid = int(part)
+            if tid != owner:
+                cur.execute("INSERT OR REPLACE INTO admins (telegram_id, username, added_by) VALUES (?, ?, ?)",
+                            (tid, None, owner))
 
 
 def get_owner_id():
