@@ -7,7 +7,8 @@ import threading
 import time
 from contextlib import contextmanager
 
-_DB_SEMAPHORE = threading.Semaphore(int(os.environ.get("DB_CONCURRENT_LIMIT", "10")))
+# Railway Free Postgres ~5 соединений. Макс 4 слота (переменная игнорируется если >4).
+_DB_SEMAPHORE = threading.Semaphore(min(4, int(os.environ.get("DB_CONCURRENT_LIMIT", "4"))))
 
 # Автоперезапуск отключён по умолчанию (0 = никогда). Иначе при PoolError контейнер уходит в цикл рестартов.
 _CRITICAL_ERRORS = []
@@ -118,11 +119,10 @@ def _get_pg_pool():
     global _PG_POOL
     if _PG_POOL is None and _USE_PG:
         import psycopg2.pool
-        limit = int(os.environ.get("DB_CONCURRENT_LIMIT", "10"))
-        maxconn = int(os.environ.get("DB_POOL_SIZE", "12"))
-        # Пул должен быть >= семафора + 2 (health check, init и т.п.)
-        maxconn = max(maxconn, limit + 2)
-        minconn = min(2, maxconn)
+        limit = min(4, int(os.environ.get("DB_CONCURRENT_LIMIT", "4")))
+        maxconn = min(5, int(os.environ.get("DB_POOL_SIZE", "5")))  # Railway Free ~5 соединений
+        maxconn = max(maxconn, limit + 1)  # +1 для health check
+        minconn = 1
         _PG_POOL = psycopg2.pool.ThreadedConnectionPool(minconn, maxconn, _DATABASE_URL)
     return _PG_POOL
 

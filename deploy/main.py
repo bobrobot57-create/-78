@@ -298,7 +298,7 @@ async def run():
     import uvicorn
     config = uvicorn.Config(app, host="0.0.0.0", port=port)
 
-    # Watchdog: при 3 подряд неудачных проверках БД — выход, Railway перезапустит
+    # Watchdog: перезапуск только при реальной недоступности БД, не при PoolError
     async def _watchdog():
         fails = 0
         while True:
@@ -314,12 +314,17 @@ async def run():
                         import os
                         os._exit(1)
             except Exception as e:
-                fails += 1
-                log.warning("Watchdog: %s", e)
-                if fails >= 3:
-                    log.warning("Watchdog: 3 ошибки подряд — перезапуск")
-                    import os
-                    os._exit(1)
+                err_str = str(e).lower()
+                if "pool" in err_str or "exhausted" in err_str:
+                    fails = 0  # PoolError — не перезапускать, это перегрузка
+                    log.debug("Watchdog: PoolError, сброс счётчика")
+                else:
+                    fails += 1
+                    log.warning("Watchdog: %s", e)
+                    if fails >= 3:
+                        log.warning("Watchdog: 3 ошибки подряд — перезапуск")
+                        import os
+                        os._exit(1)
 
     # Процессоры ботов + веб-сервер + watchdog — все параллельно
     server = uvicorn.Server(config)
