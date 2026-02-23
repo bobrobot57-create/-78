@@ -3,16 +3,10 @@
 import sqlite3
 import os
 import re
-import threading
 import time
 from contextlib import contextmanager
 
-# Railway Free: 1 слот, connect/close без пула — никогда не исчерпаем лимит Postgres.
-_RAILWAY_FREE = bool(os.environ.get("RAILWAY"))
-_SLOTS = 1 if _RAILWAY_FREE else min(4, int(os.environ.get("DB_CONCURRENT_LIMIT", "4")))
-_DB_SEMAPHORE = threading.Semaphore(_SLOTS)
-
-# Автоперезапуск отключён по умолчанию (0 = никогда). Иначе при PoolError контейнер уходит в цикл рестартов.
+# Без семафора — как в первых версиях. Пул сам блокирует при исчерпании.
 _CRITICAL_ERRORS = []
 _CRITICAL_WINDOW = int(os.environ.get("RESTART_ON_ERRORS_WINDOW", "120"))
 _CRITICAL_THRESHOLD = int(os.environ.get("RESTART_ON_ERRORS_COUNT", "0"))  # 0 = не перезапускать
@@ -113,18 +107,15 @@ class _PgConnWrapper:
         self._conn.close()
 
 
-# Пул — только если не Railway Free (там connect/close без пула)
 _PG_POOL = None
 
 
 def _get_pg_pool():
     global _PG_POOL
-    if _PG_POOL is None and _USE_PG and not _RAILWAY_FREE:
+    if _PG_POOL is None and _USE_PG:
         import psycopg2.pool
-        limit = min(4, int(os.environ.get("DB_CONCURRENT_LIMIT", "4")))
-        maxconn = min(5, int(os.environ.get("DB_POOL_SIZE", "5")))
-        maxconn = max(maxconn, limit + 1)
-        minconn = 1
+        minconn = 2
+        maxconn = int(os.environ.get("DB_POOL_SIZE", "20"))
         _PG_POOL = psycopg2.pool.ThreadedConnectionPool(minconn, maxconn, _DATABASE_URL)
     return _PG_POOL
 
@@ -147,16 +138,6 @@ def _reset_critical_errors():
     _CRITICAL_ERRORS = []
 
 
-def can_accept_db_request() -> bool:
-    """Есть ли свободный слот для БД. Для webhook — если False, вернуть 503."""
-    if not _USE_PG:
-        return True
-    if _DB_SEMAPHORE.acquire(blocking=False):
-        _DB_SEMAPHORE.release()
-        return True
-    return False
-
-
 def _db_health_check() -> bool:
     """Проверка доступности БД. Возвращает True если OK."""
     try:
@@ -172,19 +153,9 @@ def _db_health_check() -> bool:
 
 def _get_conn():
     if _USE_PG:
-        if _RAILWAY_FREE:
-            # Без пула: connect/close на каждый запрос. 1 слот = 1 соединение.
-            import psycopg2
-            return _PgConnWrapper(psycopg2.connect(_DATABASE_URL))
         pool = _get_pg_pool()
         if pool:
-            try:
-                conn = pool.getconn()
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).error("pool.getconn() failed: %s", e, exc_info=True)
-                _on_critical_db_error()
-                raise
+            conn = pool.getconn()  # блокируется при исчерпании, не падает
             return _PgConnWrapper(conn)
         import psycopg2
         return _PgConnWrapper(psycopg2.connect(_DATABASE_URL))
@@ -193,29 +164,16 @@ def _get_conn():
 
 @contextmanager
 def get_db():
-    # Таймаут 60 сек — иначе запросы висят вечно при перегрузке
-    if not _DB_SEMAPHORE.acquire(timeout=60):
-        import logging
-        logging.getLogger(__name__).error("get_db: таймаут семафора 60 сек — слоты заняты")
-        _on_critical_db_error()
-        try:
-            from psycopg2.pool import PoolError
-        except ImportError:
-            PoolError = RuntimeError
-        raise PoolError("Сервер перегружен, попробуйте через минуту")
+    conn = _get_conn()
     try:
-        conn = _get_conn()
-        try:
-            yield conn
-            conn.commit()
-            _reset_critical_errors()  # успех — сбрасываем счётчик перезапуска
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        yield conn
+        conn.commit()
+        _reset_critical_errors()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
-        _DB_SEMAPHORE.release()
+        conn.close()
 
 
 def _pg_column_exists(cur, table: str, column: str) -> bool:
