@@ -114,8 +114,8 @@ def _get_pg_pool():
     global _PG_POOL
     if _PG_POOL is None and _USE_PG:
         import psycopg2.pool
-        minconn = 2
-        maxconn = int(os.environ.get("DB_POOL_SIZE", "20"))
+        minconn = 5
+        maxconn = int(os.environ.get("DB_POOL_SIZE", "50"))
         _PG_POOL = psycopg2.pool.ThreadedConnectionPool(minconn, maxconn, _DATABASE_URL)
     return _PG_POOL
 
