@@ -419,80 +419,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = f"👥 *Список клиентов* ({total})\n\n{summary}\n━━━━━━━━━━━━━━━━\n\n" + "\n".join(lines)
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         return
-    if data.startswith("client_") and data != "client_search" and data != "client_search_clear" and "client_sort" not in data:
-        cid_raw = data.replace("client_", "")
-        uid, un_param = None, None
-        if cid_raw.startswith("u_"):
-            un_param = cid_raw[2:]
-            uid = 0
-        else:
-            try:
-                uid = int(cid_raw)
-            except ValueError:
-                return
-        info = get_client_full_info(uid, un_param) if un_param else get_client_full_info(uid)
-        if not info:
-            await query.edit_message_text("❌ Клиент не найден.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="list_clients")]]))
-            return
-        un = f"@{info['username']}" if info.get("username") else f"ID:{info['telegram_id']}"
-        if info.get("is_blocked"): role = "🚫 Заблокирован"
-        elif info.get("is_gift"): role = "🎁 Подарок"
-        elif info.get("is_partner"): role = "🤝 Партнёр"
-        else: role = "👤 Клиент"
-        pct = info.get("percent", 10)
-        sub = info.get("subscription")
-        sub_block = "—"
-        if sub:
-            if sub["status"] == "activated":
-                days = info.get("days_left")
-                sub_block = f"`{sub['code']}` · {'∞' if days == '∞' else f'{days} дн.'}"
-            else:
-                sub_block = f"`{sub['code']}` (ожидает активации)"
-        first_seen = (info.get("first_seen") or "")[:10] if info.get("first_seen") else "—"
-        text = (
-            f"👤 *Клиент* {un}\n\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"📌 Статус: {role}\n"
-            f"📊 Реф. процент: *{pct}%*\n"
-            f"🔑 Код: {sub_block}\n"
-            f"👥 Привёл рефералов: {info.get('ref_count', 0)}\n"
-            f"💰 К выплате: ${info.get('pending_usd', 0)}\n"
-            f"📅 В системе с: {first_seen}\n"
-            f"🔗 Пригласил: {info.get('referrer') or '—'}\n"
-            f"━━━━━━━━━━━━━━━━"
-        )
-        kb = []
-        if is_owner:
-            if info.get("_assigned_only") and un_param:
-                un_safe = un_param.replace(" ", "_")[:32]
-                if not info.get("is_blocked"):
-                    kb.append([InlineKeyboardButton("🚫 Заблокировать (навсегда)", callback_data=f"client_block_u_{un_safe}_1")])
-                row = []
-                if not info.get("is_partner"):
-                    row.append(InlineKeyboardButton("🤝 Партнёр (20%)", callback_data=f"client_partner_u_{un_safe}_1"))
-                if not info.get("is_gift"):
-                    row.append(InlineKeyboardButton("🎁 Подарок (10%)", callback_data=f"client_gift_u_{un_safe}_1"))
-                if info.get("is_partner") or info.get("is_gift"):
-                    row.append(InlineKeyboardButton("👤 Клиент (10%)", callback_data=f"client_partner_u_{un_safe}_0"))
-                if row:
-                    kb.append(row)
-                kb.append([InlineKeyboardButton("✏️ Изменить % рефералки", callback_data=f"client_pct_u_{un_safe}")])
-            elif uid and not info.get("_assigned_only"):
-                if not info.get("is_blocked"):
-                    kb.append([InlineKeyboardButton("🚫 Заблокировать (навсегда)", callback_data=f"client_block_{uid}_1")])
-                row = []
-                if not info.get("is_partner"):
-                    row.append(InlineKeyboardButton("🤝 Партнёр (20%)", callback_data=f"client_partner_{uid}_1"))
-                if not info.get("is_gift"):
-                    row.append(InlineKeyboardButton("🎁 Подарок (10%)", callback_data=f"client_gift_{uid}_1"))
-                if info.get("is_partner") or info.get("is_gift"):
-                    row.append(InlineKeyboardButton("👤 Клиент (10%)", callback_data=f"client_partner_{uid}_0"))
-                if row:
-                    kb.append(row)
-                kb.append([InlineKeyboardButton("✏️ Изменить % рефералки", callback_data=f"client_pct_{uid}")])
-        kb.append([InlineKeyboardButton("◀️ К списку", callback_data="list_clients")])
-        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-        return
+    # Сначала проверяем действия (partner/gift/block/pct), иначе client_partner_123_1 попадёт сюда и упадёт
     if data.startswith("client_partner_") and is_owner:
         rest = data.replace("client_partner_", "")
         if rest.startswith("u_"):
@@ -577,6 +504,80 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✏️ Укажите процент рефералки для {un} (0–100):",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data=f"client_{uid}")]])
             )
+        return
+    if data.startswith("client_") and data != "client_search" and data != "client_search_clear" and "client_sort" not in data:
+        cid_raw = data.replace("client_", "")
+        uid, un_param = None, None
+        if cid_raw.startswith("u_"):
+            un_param = cid_raw[2:]
+            uid = 0
+        else:
+            try:
+                uid = int(cid_raw)
+            except ValueError:
+                return
+        info = get_client_full_info(uid, un_param) if un_param else get_client_full_info(uid)
+        if not info:
+            await query.edit_message_text("❌ Клиент не найден.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="list_clients")]]))
+            return
+        un = f"@{info['username']}" if info.get("username") else f"ID:{info['telegram_id']}"
+        if info.get("is_blocked"): role = "🚫 Заблокирован"
+        elif info.get("is_gift"): role = "🎁 Подарок"
+        elif info.get("is_partner"): role = "🤝 Партнёр"
+        else: role = "👤 Клиент"
+        pct = info.get("percent", 10)
+        sub = info.get("subscription")
+        sub_block = "—"
+        if sub:
+            if sub["status"] == "activated":
+                days = info.get("days_left")
+                sub_block = f"`{sub['code']}` · {'∞' if days == '∞' else f'{days} дн.'}"
+            else:
+                sub_block = f"`{sub['code']}` (ожидает активации)"
+        first_seen = (info.get("first_seen") or "")[:10] if info.get("first_seen") else "—"
+        text = (
+            f"👤 *Клиент* {un}\n\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"📌 Статус: {role}\n"
+            f"📊 Реф. процент: *{pct}%*\n"
+            f"🔑 Код: {sub_block}\n"
+            f"👥 Привёл рефералов: {info.get('ref_count', 0)}\n"
+            f"💰 К выплате: ${info.get('pending_usd', 0)}\n"
+            f"📅 В системе с: {first_seen}\n"
+            f"🔗 Пригласил: {info.get('referrer') or '—'}\n"
+            f"━━━━━━━━━━━━━━━━"
+        )
+        kb = []
+        if is_owner:
+            if info.get("_assigned_only") and un_param:
+                un_safe = un_param.replace(" ", "_")[:32]
+                if not info.get("is_blocked"):
+                    kb.append([InlineKeyboardButton("🚫 Заблокировать (навсегда)", callback_data=f"client_block_u_{un_safe}_1")])
+                row = []
+                if not info.get("is_partner"):
+                    row.append(InlineKeyboardButton("🤝 Партнёр (20%)", callback_data=f"client_partner_u_{un_safe}_1"))
+                if not info.get("is_gift"):
+                    row.append(InlineKeyboardButton("🎁 Подарок (10%)", callback_data=f"client_gift_u_{un_safe}_1"))
+                if info.get("is_partner") or info.get("is_gift"):
+                    row.append(InlineKeyboardButton("👤 Клиент (10%)", callback_data=f"client_partner_u_{un_safe}_0"))
+                if row:
+                    kb.append(row)
+                kb.append([InlineKeyboardButton("✏️ Изменить % рефералки", callback_data=f"client_pct_u_{un_safe}")])
+            elif uid and not info.get("_assigned_only"):
+                if not info.get("is_blocked"):
+                    kb.append([InlineKeyboardButton("🚫 Заблокировать (навсегда)", callback_data=f"client_block_{uid}_1")])
+                row = []
+                if not info.get("is_partner"):
+                    row.append(InlineKeyboardButton("🤝 Партнёр (20%)", callback_data=f"client_partner_{uid}_1"))
+                if not info.get("is_gift"):
+                    row.append(InlineKeyboardButton("🎁 Подарок (10%)", callback_data=f"client_gift_{uid}_1"))
+                if info.get("is_partner") or info.get("is_gift"):
+                    row.append(InlineKeyboardButton("👤 Клиент (10%)", callback_data=f"client_partner_{uid}_0"))
+                if row:
+                    kb.append(row)
+                kb.append([InlineKeyboardButton("✏️ Изменить % рефералки", callback_data=f"client_pct_{uid}")])
+        kb.append([InlineKeyboardButton("◀️ К списку", callback_data="list_clients")])
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         return
     if data == "ref_stats":
         context.user_data.pop("awaiting_payment", None)
