@@ -147,7 +147,7 @@ def can_accept_db_request() -> bool:
     """Есть ли свободный слот для БД. Для webhook — если False, вернуть 503."""
     if not _USE_PG:
         return True
-    if _DB_SEMAPHORE.acquire(block=False):
+    if _DB_SEMAPHORE.acquire(blocking=False):
         _DB_SEMAPHORE.release()
         return True
     return False
