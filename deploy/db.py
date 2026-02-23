@@ -114,8 +114,9 @@ def _get_pg_pool():
     global _PG_POOL
     if _PG_POOL is None and _USE_PG:
         import psycopg2.pool
-        minconn = 5
-        maxconn = int(os.environ.get("DB_POOL_SIZE", "50"))
+        minconn = 3
+        maxconn = int(os.environ.get("DB_POOL_SIZE", "30"))
+        maxconn = max(maxconn, 20)  # минимум 20 — иначе 16 воркеров исчерпают пул
         _PG_POOL = psycopg2.pool.ThreadedConnectionPool(minconn, maxconn, _DATABASE_URL)
     return _PG_POOL
 
@@ -164,16 +165,25 @@ def _get_conn():
 
 @contextmanager
 def get_db():
-    conn = _get_conn()
+    conn = None
     try:
+        conn = _get_conn()
         yield conn
         conn.commit()
         _reset_critical_errors()
     except Exception:
-        conn.rollback()
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         raise
     finally:
-        conn.close()
+        if conn is not None:
+            try:
+                conn.close()  # всегда возвращаем в пул
+            except Exception:
+                pass  # не маскируем исходную ошибку, но соединение могло уйти в пул
 
 
 def _pg_column_exists(cur, table: str, column: str) -> bool:

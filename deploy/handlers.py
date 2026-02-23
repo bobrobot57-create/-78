@@ -1490,7 +1490,7 @@ def build_admin_app(token: str) -> Application:
         Application.builder()
         .token(token)
         .updater(None)
-        .concurrent_updates(16)
+        .concurrent_updates(8)  # 8+8=16 воркеров, пул 30 — 1 юзер кликает без лимита
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
@@ -1517,7 +1517,7 @@ def build_client_app(token: str) -> Application:
         Application.builder()
         .token(token)
         .updater(None)
-        .concurrent_updates(16)
+        .concurrent_updates(8)  # 8+8=16 воркеров, пул 30 — 1 юзер кликает без лимита
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
