@@ -7,8 +7,10 @@ import threading
 import time
 from contextlib import contextmanager
 
-# Railway Free Postgres ~5 соединений. Макс 4 слота (переменная игнорируется если >4).
-_DB_SEMAPHORE = threading.Semaphore(min(4, int(os.environ.get("DB_CONCURRENT_LIMIT", "4"))))
+# Railway Free: 1 слот, connect/close без пула — никогда не исчерпаем лимит Postgres.
+_RAILWAY_FREE = bool(os.environ.get("RAILWAY"))
+_SLOTS = 1 if _RAILWAY_FREE else min(4, int(os.environ.get("DB_CONCURRENT_LIMIT", "4")))
+_DB_SEMAPHORE = threading.Semaphore(_SLOTS)
 
 # Автоперезапуск отключён по умолчанию (0 = никогда). Иначе при PoolError контейнер уходит в цикл рестартов.
 _CRITICAL_ERRORS = []
@@ -111,17 +113,17 @@ class _PgConnWrapper:
         self._conn.close()
 
 
-# Пул соединений PostgreSQL — выдерживает 200+ одновременных запросов без исчерпания лимита
+# Пул — только если не Railway Free (там connect/close без пула)
 _PG_POOL = None
 
 
 def _get_pg_pool():
     global _PG_POOL
-    if _PG_POOL is None and _USE_PG:
+    if _PG_POOL is None and _USE_PG and not _RAILWAY_FREE:
         import psycopg2.pool
         limit = min(4, int(os.environ.get("DB_CONCURRENT_LIMIT", "4")))
-        maxconn = min(5, int(os.environ.get("DB_POOL_SIZE", "5")))  # Railway Free ~5 соединений
-        maxconn = max(maxconn, limit + 1)  # +1 для health check
+        maxconn = min(5, int(os.environ.get("DB_POOL_SIZE", "5")))
+        maxconn = max(maxconn, limit + 1)
         minconn = 1
         _PG_POOL = psycopg2.pool.ThreadedConnectionPool(minconn, maxconn, _DATABASE_URL)
     return _PG_POOL
@@ -170,6 +172,10 @@ def _db_health_check() -> bool:
 
 def _get_conn():
     if _USE_PG:
+        if _RAILWAY_FREE:
+            # Без пула: connect/close на каждый запрос. 1 слот = 1 соединение.
+            import psycopg2
+            return _PgConnWrapper(psycopg2.connect(_DATABASE_URL))
         pool = _get_pg_pool()
         if pool:
             try:
@@ -177,7 +183,7 @@ def _get_conn():
             except Exception as e:
                 import logging
                 logging.getLogger(__name__).error("pool.getconn() failed: %s", e, exc_info=True)
-                _on_critical_db_error()  # pool.getconn() упал — критическая ошибка
+                _on_critical_db_error()
                 raise
             return _PgConnWrapper(conn)
         import psycopg2

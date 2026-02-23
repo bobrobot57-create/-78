@@ -1456,7 +1456,7 @@ def build_admin_app(token: str) -> Application:
         Application.builder()
         .token(token)
         .updater(None)
-        .concurrent_updates(2)  # 2+2=4 воркера, 4 слота БД
+        .concurrent_updates(1)  # Railway Free: 1+1=2 воркера, 1 слот БД
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
@@ -1483,7 +1483,7 @@ def build_client_app(token: str) -> Application:
         Application.builder()
         .token(token)
         .updater(None)
-        .concurrent_updates(2)  # 2+2=4 воркера, 4 слота БД
+        .concurrent_updates(1)  # Railway Free: 1+1=2 воркера, 1 слот БД
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
