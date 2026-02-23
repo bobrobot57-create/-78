@@ -122,25 +122,34 @@ def get_db():
         conn.close()
 
 
-def _alter_safe(cur, sql):
-    """Выполнить ALTER TABLE, игнорируя ошибку «колонка уже есть»."""
+def _alter_safe(conn, cur, sql):
+    """Выполнить ALTER TABLE, игнорируя ошибку «колонка уже есть». SAVEPOINT чтобы не откатывать всю транзакцию."""
     try:
+        cur.execute("SAVEPOINT alter_safe")
         cur.execute(sql)
     except (sqlite3.OperationalError, Exception):
-        pass
+        try:
+            cur.execute("ROLLBACK TO SAVEPOINT alter_safe")
+        except Exception:
+            conn.rollback()
+    else:
+        try:
+            cur.execute("RELEASE SAVEPOINT alter_safe")
+        except Exception:
+            pass
 
 
 def init_db():
     with get_db() as conn:
         cur = conn.cursor()
         if _USE_PG:
-            _init_db_pg(cur)
+            _init_db_pg(conn, cur)
         else:
-            _init_db_sqlite(cur)
+            _init_db_sqlite(conn, cur)
         conn.commit()
 
 
-def _init_db_sqlite(cur):
+def _init_db_sqlite(conn, cur):
     """Схема для SQLite."""
     cur.execute("""
         CREATE TABLE IF NOT EXISTS codes (
@@ -152,9 +161,9 @@ def _init_db_sqlite(cur):
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    _alter_safe(cur, "ALTER TABLE codes ADD COLUMN assigned_username TEXT")
-    _alter_safe(cur, "ALTER TABLE users ADD COLUMN is_gift INTEGER DEFAULT 0")
-    _alter_safe(cur, "ALTER TABLE users ADD COLUMN is_blocked INTEGER DEFAULT 0")
+    _alter_safe(conn, cur, "ALTER TABLE codes ADD COLUMN assigned_username TEXT")
+    _alter_safe(conn, cur, "ALTER TABLE users ADD COLUMN is_gift INTEGER DEFAULT 0")
+    _alter_safe(conn, cur, "ALTER TABLE users ADD COLUMN is_blocked INTEGER DEFAULT 0")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS activations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,7 +177,7 @@ def _init_db_sqlite(cur):
             FOREIGN KEY (code_id) REFERENCES codes(id)
         )
     """)
-    _alter_safe(cur, "ALTER TABLE activations ADD COLUMN installation_id TEXT")
+    _alter_safe(conn, cur, "ALTER TABLE activations ADD COLUMN installation_id TEXT")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_activations_hwid ON activations(hwid)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_activations_code ON activations(code_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_codes_code ON codes(code)")
@@ -218,7 +227,7 @@ def _init_db_sqlite(cur):
         )
     """)
     for col in ("merchant_order_id", "payment_system"):
-        _alter_safe(cur, f"ALTER TABLE payments ADD COLUMN {col} TEXT")
+        _alter_safe(conn, cur, f"ALTER TABLE payments ADD COLUMN {col} TEXT")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS referral_payouts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -268,7 +277,7 @@ def _init_db_sqlite(cur):
     """)
 
 
-def _init_db_pg(cur):
+def _init_db_pg(conn, cur):
     """Схема для PostgreSQL."""
     cur.execute("""
         CREATE TABLE IF NOT EXISTS codes (
@@ -280,7 +289,7 @@ def _init_db_pg(cur):
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    _alter_safe(cur, "ALTER TABLE codes ADD COLUMN assigned_username TEXT")
+    _alter_safe(conn, cur, "ALTER TABLE codes ADD COLUMN assigned_username TEXT")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS activations (
             id SERIAL PRIMARY KEY,
@@ -293,7 +302,7 @@ def _init_db_pg(cur):
             revoked INTEGER DEFAULT 0
         )
     """)
-    _alter_safe(cur, "ALTER TABLE activations ADD COLUMN installation_id TEXT")
+    _alter_safe(conn, cur, "ALTER TABLE activations ADD COLUMN installation_id TEXT")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_activations_hwid ON activations(hwid)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_activations_code ON activations(code_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_codes_code ON codes(code)")
@@ -317,8 +326,8 @@ def _init_db_pg(cur):
             first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    _alter_safe(cur, "ALTER TABLE users ADD COLUMN is_gift INTEGER DEFAULT 0")
-    _alter_safe(cur, "ALTER TABLE users ADD COLUMN is_blocked INTEGER DEFAULT 0")
+    _alter_safe(conn, cur, "ALTER TABLE users ADD COLUMN is_gift INTEGER DEFAULT 0")
+    _alter_safe(conn, cur, "ALTER TABLE users ADD COLUMN is_blocked INTEGER DEFAULT 0")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS referrals (
             id SERIAL PRIMARY KEY,
@@ -341,7 +350,7 @@ def _init_db_pg(cur):
         )
     """)
     for col in ("merchant_order_id", "payment_system"):
-        _alter_safe(cur, f"ALTER TABLE payments ADD COLUMN {col} TEXT")
+        _alter_safe(conn, cur, f"ALTER TABLE payments ADD COLUMN {col} TEXT")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS referral_payouts (
             id SERIAL PRIMARY KEY,
