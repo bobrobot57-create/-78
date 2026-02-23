@@ -7,8 +7,8 @@ import threading
 import time
 from contextlib import contextmanager
 
-# Railway Free: 0.5 GB RAM, Postgres ~20 соединений. Hobby: 100. Ставим 6 для Free.
-_DB_SEMAPHORE = threading.Semaphore(int(os.environ.get("DB_CONCURRENT_LIMIT", "6")))
+# Railway Postgres по умолчанию 100 соединений. Ставим 20 — хватает для обычной нагрузки.
+_DB_SEMAPHORE = threading.Semaphore(int(os.environ.get("DB_CONCURRENT_LIMIT", "20")))
 
 # Автоперезапуск при серии критических ошибок (Railway подхватит и перезапустит контейнер)
 _CRITICAL_ERRORS = []
@@ -119,8 +119,8 @@ def _get_pg_pool():
     global _PG_POOL
     if _PG_POOL is None and _USE_PG:
         import psycopg2.pool
-        minconn = 2  # Railway Free: мало RAM, не держим много idle
-        maxconn = int(os.environ.get("DB_POOL_SIZE", "8"))  # Free: 8, Hobby: можно 20+
+        minconn = 5
+        maxconn = int(os.environ.get("DB_POOL_SIZE", "25"))  # Railway Postgres 100 по умолчанию
         _PG_POOL = psycopg2.pool.ThreadedConnectionPool(minconn, maxconn, _DATABASE_URL)
     return _PG_POOL
 
