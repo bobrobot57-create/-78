@@ -1061,13 +1061,10 @@ async def on_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def _client_keyboard():
-    url = get_setting("software_url", "https://drive.google.com/drive/folders/18hdLnr_zPo7_Eao9thFQkp2H4nbgtLIa").strip()
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("👤 Личный кабинет", callback_data="client_cabinet")],
         [InlineKeyboardButton("🛒 Купить подписку", callback_data="client_buy"), InlineKeyboardButton("🔑 Мой код", callback_data="client_mycode")],
-        [InlineKeyboardButton("📥 Получить софт", url=url)],
+        [InlineKeyboardButton("📥 Получить софт", callback_data="client_software")],
     ])
 
 
@@ -1247,18 +1244,28 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚠️ Не удалось создать ссылку. Попробуйте позже или выберите оплату картой.", reply_markup=InlineKeyboardMarkup([_client_menu_button()]))
         return
     if query.data == "client_software":
-        url = get_setting("software_url", "https://drive.google.com/").strip()
+        url = get_setting("software_url", "https://drive.google.com/drive/folders/18hdLnr_zPo7_Eao9thFQkp2H4nbgtLIa").strip()
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
-        kb = [InlineKeyboardButton("📥 Открыть в браузере", url=url)]
-        kb.append(_client_menu_button()[0])
-        await query.edit_message_text(
-            f"📥 *Скачать VoiceLab*\n\n"
-            f"Нажмите кнопку ниже — откроется в браузере.\n"
-            f"Распакуйте и запустите. Тест: 10 000 символов.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(kb)
+        text = (
+            "📥 *Как получить VoiceLab*\n\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "1️⃣ Откройте ссылку на Google Drive\n\n"
+            "2️⃣ Скачайте архив\n\n"
+            "3️⃣ Распакуйте на рабочий стол\n\n"
+            "4️⃣ Запустите exe\n\n"
+            "5️⃣ Используйте 10 000 бесплатных символов\n\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "💎 *Если понравится — купите лицензию*\n\n"
+            "6️⃣ В софте нажмите «Ввести код»\n\n"
+            "7️⃣ Введите код и нажмите на серую плашку ввода\n\n"
+            "8️⃣ Лицензия активируется полностью ✅"
         )
+        kb = [
+            [InlineKeyboardButton("🔗 Открыть Google Drive", url=url)],
+            _client_menu_button(),
+        ]
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         return
     if query.data == "client_mycode":
         sub = get_user_subscription_info(user_id, username)
