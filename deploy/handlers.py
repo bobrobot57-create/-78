@@ -44,6 +44,15 @@ def _fmt_date(val):
     return str(val)[:10]
 
 
+def _escape_md(s: str) -> str:
+    """Экранирование для Markdown (underscore и др. ломают разбор)."""
+    if not s:
+        return s
+    for c in "_*`[":
+        s = str(s).replace(c, "\\" + c)
+    return s
+
+
 def _is_owner(user_id: int) -> bool:
     """Полные права: владелец (первый в ADMIN_USER_IDS) или любой админ из admins."""
     if get_owner_id() is not None and user_id == get_owner_id():
@@ -348,53 +357,57 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         search = context.user_data.get("client_search") or ""
         try:
             users = list_clients_with_extended(sort_by)
-        except PoolError:
+            if search:
+                un = search.lower().lstrip("@")
+                users = [u for u in users if un in (u.get("username") or "").lower() or str(u["telegram_id"]) == search]
+            paid = set(list_paid_users())
+            total = len(users)
+            clients = sum(1 for u in users if not u.get("is_partner") and not u.get("is_gift"))
+            partners = sum(1 for u in users if u.get("is_partner"))
+            gifts = sum(1 for u in users if u.get("is_gift"))
+            summary = f"👤 {clients} | 🤝 {partners} | 🎁 {gifts} | 💰 {len(paid)} оплатили"
+            PAGE_SIZE = 10
+            total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+            page = max(0, min(page, total_pages - 1))
+            start = page * PAGE_SIZE
+            page_users = users[start:start + PAGE_SIZE]
+            lines, kb = [], []
+            for u in page_users:
+                un = f"@{u['username']}" if u.get("username") else f"ID:{u['telegram_id']}"
+                un_safe = _escape_md(un)
+                if u.get("is_blocked"): role = "🚫"
+                elif u.get("is_partner"): role = "🤝"
+                elif u.get("is_gift"): role = "🎁"
+                else: role = "👤"
+                pay_mark = "💰" if u["telegram_id"] in paid else "—"
+                lines.append(f"{role} {un_safe} {pay_mark}")
+                cid = u["telegram_id"] if u["telegram_id"] else f"u_{u.get('username','')}"
+                kb.append([InlineKeyboardButton(f"📋 {un}", callback_data=f"client_{cid}")])
+            nav = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("◀️", callback_data=f"list_clients:{page-1}:{sort_by}"))
+            nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+            if page < total_pages - 1:
+                nav.append(InlineKeyboardButton("▶️", callback_data=f"list_clients:{page+1}:{sort_by}"))
+            kb.append(nav)
+            sort_btn = InlineKeyboardButton("📊 Сортировка", callback_data="client_sort_menu")
+            footer = [InlineKeyboardButton("🔍 Поиск", callback_data="client_search"), InlineKeyboardButton("🔄", callback_data="list_clients"), sort_btn]
+            if search:
+                footer.insert(1, InlineKeyboardButton("✖", callback_data="client_search_clear"))
+            footer.append(InlineKeyboardButton("◀️ Меню", callback_data="main_menu"))
+            kb.append(footer)
+            header = f"Поиск: @{search}\n\n" if search else ""
+            text = f"👥 *Список клиентов* ({total})\n\n{summary}\n━━━━━━━━━━━━━━━━\n\n{header}" + "\n".join(lines)
+            try:
+                await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+            except BadRequest:
+                await query.edit_message_text(text[:4000], reply_markup=InlineKeyboardMarkup(kb))
+        except Exception as e:
+            err_msg = "Сервер перегружен" if "перегружен" in str(e) or "pool" in str(e).lower() else "Ошибка загрузки"
             await query.edit_message_text(
-                "⚠️ Сервер перегружен. Подождите минуту и нажмите «Список клиентов» снова.",
+                f"⚠️ {err_msg}. Подождите минуту и нажмите «Повторить».",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Повторить", callback_data="list_clients"), InlineKeyboardButton("◀️ Меню", callback_data="main_menu")]])
             )
-            return
-        if search:
-            un = search.lower().lstrip("@")
-            users = [u for u in users if un in (u.get("username") or "").lower() or str(u["telegram_id"]) == search]
-        paid = set(list_paid_users())
-        total = len(users)
-        clients = sum(1 for u in users if not u.get("is_partner") and not u.get("is_gift"))
-        partners = sum(1 for u in users if u.get("is_partner"))
-        gifts = sum(1 for u in users if u.get("is_gift"))
-        summary = f"👤 {clients} | 🤝 {partners} | 🎁 {gifts} | 💰 {len(paid)} оплатили"
-        PAGE_SIZE = 10
-        total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-        page = max(0, min(page, total_pages - 1))
-        start = page * PAGE_SIZE
-        page_users = users[start:start + PAGE_SIZE]
-        lines, kb = [], []
-        for u in page_users:
-            un = f"@{u['username']}" if u.get("username") else f"ID:{u['telegram_id']}"
-            if u.get("is_blocked"): role = "🚫"
-            elif u.get("is_partner"): role = "🤝"
-            elif u.get("is_gift"): role = "🎁"
-            else: role = "👤"
-            pay_mark = "💰" if u["telegram_id"] in paid else "—"
-            lines.append(f"{role} {un} {pay_mark}")
-            cid = u["telegram_id"] if u["telegram_id"] else f"u_{u.get('username','')}"
-            kb.append([InlineKeyboardButton(f"📋 {un}", callback_data=f"client_{cid}")])
-        nav = []
-        if page > 0:
-            nav.append(InlineKeyboardButton("◀️", callback_data=f"list_clients:{page-1}:{sort_by}"))
-        nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
-        if page < total_pages - 1:
-            nav.append(InlineKeyboardButton("▶️", callback_data=f"list_clients:{page+1}:{sort_by}"))
-        kb.append(nav)
-        sort_btn = InlineKeyboardButton("📊 Сортировка", callback_data="client_sort_menu")
-        footer = [InlineKeyboardButton("🔍 Поиск", callback_data="client_search"), InlineKeyboardButton("🔄", callback_data="list_clients"), sort_btn]
-        if search:
-            footer.insert(1, InlineKeyboardButton("✖", callback_data="client_search_clear"))
-        footer.append(InlineKeyboardButton("◀️ Меню", callback_data="main_menu"))
-        kb.append(footer)
-        header = f"Поиск: @{search}\n\n" if search else ""
-        text = f"👥 *Список клиентов* ({total})\n\n{summary}\n━━━━━━━━━━━━━━━━\n\n{header}" + "\n".join(lines)
-        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         return
     if data == "client_sort_menu":
         sort = context.user_data.get("client_sort", "date")
@@ -415,9 +428,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("awaiting_client_search", None)
         try:
             users = list_clients_with_extended(context.user_data.get("client_sort", "date"))
-        except PoolError:
+        except Exception:
             await query.edit_message_text(
-                "⚠️ Сервер перегружен. Подождите минуту.",
+                "⚠️ Ошибка загрузки. Подождите минуту.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="main_menu")]])
             )
             return
@@ -433,12 +446,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines, kb = [], []
         for u in page_users:
             un = f"@{u['username']}" if u.get("username") else f"ID:{u['telegram_id']}"
+            un_safe = _escape_md(un)
             if u.get("is_blocked"): role = "🚫"
             elif u.get("is_partner"): role = "🤝"
             elif u.get("is_gift"): role = "🎁"
             else: role = "👤"
             pay_mark = "💰" if u["telegram_id"] in paid else "—"
-            lines.append(f"{role} {un} {pay_mark}")
+            lines.append(f"{role} {un_safe} {pay_mark}")
             cid = u["telegram_id"] if u["telegram_id"] else f"u_{u.get('username','')}"
             kb.append([InlineKeyboardButton(f"📋 {un}", callback_data=f"client_{cid}")])
         sort_by = context.user_data.get("client_sort", "date")
@@ -448,7 +462,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb.append(nav)
         kb.append([InlineKeyboardButton("🔍 Поиск", callback_data="client_search"), InlineKeyboardButton("🔄", callback_data="list_clients"), InlineKeyboardButton("📊 Сорт.", callback_data="client_sort_menu"), InlineKeyboardButton("◀️ Меню", callback_data="main_menu")])
         text = f"👥 *Список клиентов* ({total})\n\n{summary}\n━━━━━━━━━━━━━━━━\n\n" + "\n".join(lines)
-        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        try:
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        except BadRequest:
+            await query.edit_message_text(text[:4000], reply_markup=InlineKeyboardMarkup(kb))
         return
     # Сначала проверяем действия (partner/gift/block/pct), иначе client_partner_123_1 попадёт сюда и упадёт
     if data.startswith("client_partner_") and is_owner:

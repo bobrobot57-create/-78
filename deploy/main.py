@@ -26,7 +26,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from telegram import Update, BotCommand
 
-from db import init_db, check_license, activate_code, create_code, add_payment, payment_exists_by_order_id, get_all_admin_ids, list_admins, get_user
+from db import init_db, check_license, activate_code, create_code, add_payment, payment_exists_by_order_id, get_all_admin_ids, list_admins, get_user, _db_health_check
 from handlers import build_admin_app, build_client_app, set_client_bot, get_client_bot
 from payment import (
     generate_freekassa_link,
@@ -82,7 +82,14 @@ async def api_check(request: Request):
 
 
 async def health(request: Request):
-    return JSONResponse({"status": "ok"})
+    """Health check: 503 если БД недоступна — Railway перезапустит контейнер."""
+    try:
+        ok = await asyncio.to_thread(_db_health_check)
+    except Exception:
+        ok = False
+    if ok:
+        return JSONResponse({"status": "ok"})
+    return JSONResponse({"status": "unhealthy", "db": "fail"}, status_code=503)
 
 
 async def webhook_admin(request: Request):
@@ -292,9 +299,32 @@ async def run():
     import uvicorn
     config = uvicorn.Config(app, host="0.0.0.0", port=port)
 
-    # Процессоры ботов + веб-сервер — все параллельно
+    # Watchdog: при 3 подряд неудачных проверках БД — выход, Railway перезапустит
+    async def _watchdog():
+        fails = 0
+        while True:
+            await asyncio.sleep(60)
+            try:
+                ok = await asyncio.to_thread(_db_health_check)
+                if ok:
+                    fails = 0
+                else:
+                    fails += 1
+                    if fails >= 3:
+                        log.warning("Watchdog: БД недоступна 3 раза подряд — перезапуск")
+                        import os
+                        os._exit(1)
+            except Exception as e:
+                fails += 1
+                log.warning("Watchdog: %s", e)
+                if fails >= 3:
+                    log.warning("Watchdog: 3 ошибки подряд — перезапуск")
+                    import os
+                    os._exit(1)
+
+    # Процессоры ботов + веб-сервер + watchdog — все параллельно
     server = uvicorn.Server(config)
-    tasks = [server.serve()]
+    tasks = [server.serve(), _watchdog()]
     if admin_app:
         tasks.append(admin_app.start())
     if client_app:

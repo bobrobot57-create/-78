@@ -4,10 +4,16 @@ import sqlite3
 import os
 import re
 import threading
+import time
 from contextlib import contextmanager
 
 # Семафор: ограничивает одновременные обращения к БД (жёстко не больше N)
 _DB_SEMAPHORE = threading.Semaphore(int(os.environ.get("DB_CONCURRENT_LIMIT", "32")))
+
+# Автоперезапуск при серии критических ошибок (Railway подхватит и перезапустит контейнер)
+_CRITICAL_ERRORS = []
+_CRITICAL_WINDOW = int(os.environ.get("RESTART_ON_ERRORS_WINDOW", "120"))  # сек
+_CRITICAL_THRESHOLD = int(os.environ.get("RESTART_ON_ERRORS_COUNT", "8"))  # ошибок
 
 _DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 _USE_PG = bool(_DATABASE_URL and "postgres" in _DATABASE_URL.lower())
@@ -119,11 +125,46 @@ def _get_pg_pool():
     return _PG_POOL
 
 
+def _on_critical_db_error():
+    """При серии критических ошибок — выход процесса, Railway перезапустит контейнер."""
+    global _CRITICAL_ERRORS
+    now = time.time()
+    _CRITICAL_ERRORS = [t for t in _CRITICAL_ERRORS if now - t < _CRITICAL_WINDOW]
+    _CRITICAL_ERRORS.append(now)
+    if len(_CRITICAL_ERRORS) >= _CRITICAL_THRESHOLD:
+        import logging
+        logging.getLogger(__name__).warning("⚠️ %d критических ошибок за %d сек — принудительный перезапуск", len(_CRITICAL_ERRORS), _CRITICAL_WINDOW)
+        os._exit(1)
+
+
+def _reset_critical_errors():
+    """Сброс счётчика при успешной операции."""
+    global _CRITICAL_ERRORS
+    _CRITICAL_ERRORS = []
+
+
+def _db_health_check() -> bool:
+    """Проверка доступности БД. Возвращает True если OK."""
+    try:
+        with get_db() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        _reset_critical_errors()
+        return True
+    except Exception:
+        return False
+
+
 def _get_conn():
     if _USE_PG:
         pool = _get_pg_pool()
         if pool:
-            conn = pool.getconn()
+            try:
+                conn = pool.getconn()
+            except Exception:
+                _on_critical_db_error()  # pool.getconn() упал — критическая ошибка
+                raise
             return _PgConnWrapper(conn)
         import psycopg2
         return _PgConnWrapper(psycopg2.connect(_DATABASE_URL))
@@ -132,12 +173,20 @@ def _get_conn():
 
 @contextmanager
 def get_db():
-    _DB_SEMAPHORE.acquire()
+    # Таймаут 60 сек — иначе запросы висят вечно при перегрузке
+    if not _DB_SEMAPHORE.acquire(timeout=60):
+        _on_critical_db_error()
+        try:
+            from psycopg2.pool import PoolError
+        except ImportError:
+            PoolError = RuntimeError
+        raise PoolError("Сервер перегружен, попробуйте через минуту")
     try:
         conn = _get_conn()
         try:
             yield conn
             conn.commit()
+            _reset_critical_errors()  # успех — сбрасываем счётчик перезапуска
         except Exception:
             conn.rollback()
             raise
