@@ -246,7 +246,7 @@ async def _notify_admin_payment(user_id: int, amount: float, days: int, system: 
 async def run():
     global admin_app, client_app
     import concurrent.futures
-    pool_size = int(os.environ.get("THREAD_POOL_SIZE", "20"))
+    pool_size = int(os.environ.get("THREAD_POOL_SIZE", "10"))
     asyncio.get_event_loop().set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=pool_size))
     init_db()
 
