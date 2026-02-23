@@ -13,6 +13,11 @@ def get_client_bot():
     return _client_bot
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest, TimedOut, NetworkError
+
+try:
+    from psycopg2.pool import PoolError
+except ImportError:
+    PoolError = type("PoolError", (Exception,), {})  # если psycopg2 нет
 from telegram.ext import (
     Application, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler,
     filters,
@@ -341,7 +346,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sort_by = parts[2]
             context.user_data["client_sort"] = sort_by
         search = context.user_data.get("client_search") or ""
-        users = list_clients_with_extended(sort_by)
+        try:
+            users = list_clients_with_extended(sort_by)
+        except PoolError:
+            await query.edit_message_text(
+                "⚠️ Сервер перегружен. Подождите минуту и нажмите «Список клиентов» снова.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Повторить", callback_data="list_clients"), InlineKeyboardButton("◀️ Меню", callback_data="main_menu")]])
+            )
+            return
         if search:
             un = search.lower().lstrip("@")
             users = [u for u in users if un in (u.get("username") or "").lower() or str(u["telegram_id"]) == search]
@@ -401,7 +413,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "client_search_clear":
         context.user_data.pop("client_search", None)
         context.user_data.pop("awaiting_client_search", None)
-        users = list_clients_with_extended(context.user_data.get("client_sort", "date"))
+        try:
+            users = list_clients_with_extended(context.user_data.get("client_sort", "date"))
+        except PoolError:
+            await query.edit_message_text(
+                "⚠️ Сервер перегружен. Подождите минуту.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="main_menu")]])
+            )
+            return
         paid = set(list_paid_users())
         total = len(users)
         clients = sum(1 for u in users if not u.get("is_partner") and not u.get("is_gift"))
@@ -528,7 +547,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 uid = int(cid_raw)
             except ValueError:
                 return
-        info = get_client_full_info(uid, un_param) if un_param else get_client_full_info(uid)
+        try:
+            info = get_client_full_info(uid, un_param) if un_param else get_client_full_info(uid)
+        except PoolError:
+            await query.edit_message_text(
+                "⚠️ Сервер перегружен. Подождите минуту и попробуйте снова.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К списку", callback_data="list_clients")]])
+            )
+            return
         if not info:
             await query.edit_message_text("❌ Клиент не найден.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="list_clients")]]))
             return
@@ -1392,12 +1418,12 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 
 def build_admin_app(token: str) -> Application:
-    # concurrent_updates(16) — ограничение нагрузки на пул БД
+    # concurrent_updates(8) — семафор в db.py ограничивает одновременные запросы
     app = (
         Application.builder()
         .token(token)
         .updater(None)
-        .concurrent_updates(16)
+        .concurrent_updates(8)
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
@@ -1424,7 +1450,7 @@ def build_client_app(token: str) -> Application:
         Application.builder()
         .token(token)
         .updater(None)
-        .concurrent_updates(16)
+        .concurrent_updates(8)
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)

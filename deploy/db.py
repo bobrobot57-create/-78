@@ -3,7 +3,11 @@
 import sqlite3
 import os
 import re
+import threading
 from contextlib import contextmanager
+
+# Семафор: ограничивает одновременные обращения к БД (жёстко не больше N)
+_DB_SEMAPHORE = threading.Semaphore(int(os.environ.get("DB_CONCURRENT_LIMIT", "32")))
 
 _DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 _USE_PG = bool(_DATABASE_URL and "postgres" in _DATABASE_URL.lower())
@@ -110,7 +114,7 @@ def _get_pg_pool():
     if _PG_POOL is None and _USE_PG:
         import psycopg2.pool
         minconn = 5
-        maxconn = int(os.environ.get("DB_POOL_SIZE", "100"))  # >= THREAD_POOL_SIZE
+        maxconn = int(os.environ.get("DB_POOL_SIZE", "40"))  # >= DB_CONCURRENT_LIMIT
         _PG_POOL = psycopg2.pool.ThreadedConnectionPool(minconn, maxconn, _DATABASE_URL)
     return _PG_POOL
 
@@ -128,15 +132,19 @@ def _get_conn():
 
 @contextmanager
 def get_db():
-    conn = _get_conn()
+    _DB_SEMAPHORE.acquire()
     try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+        conn = _get_conn()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
     finally:
-        conn.close()
+        _DB_SEMAPHORE.release()
 
 
 def _pg_column_exists(cur, table: str, column: str) -> bool:
