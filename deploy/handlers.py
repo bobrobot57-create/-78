@@ -25,6 +25,7 @@ from db import (
     get_user_subscription_info, get_client_full_info,
     ensure_user, get_user, get_user_by_username, set_partner, set_custom_discount,
     set_gift, set_blocked,
+    ensure_pending_user, get_pending_user, set_pending_blocked, set_pending_partner, set_pending_gift, set_pending_discount, merge_pending_to_user,
     list_referrals, add_payment, get_referral_stats, get_user_payouts, get_user_total_pending,
     list_all_users, list_paid_users, list_assigned_usernames_not_in_users, list_clients_with_extended,
     get_setting, set_setting, list_recent_payments,
@@ -456,68 +457,121 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"━━━━━━━━━━━━━━━━"
         )
         kb = []
-        if not info.get("_assigned_only") and uid and is_owner:
-            if info.get("is_blocked"):
-                kb.append([InlineKeyboardButton("✅ Разблокировать", callback_data=f"client_block_{uid}_0")])
-            else:
-                kb.append([InlineKeyboardButton("🚫 Заблокировать", callback_data=f"client_block_{uid}_1")])
-            row = []
-            if not info.get("is_partner"):
-                row.append(InlineKeyboardButton("🤝 Партнёр (20%)", callback_data=f"client_partner_{uid}_1"))
-            if not info.get("is_gift"):
-                row.append(InlineKeyboardButton("🎁 Подарок (10%)", callback_data=f"client_gift_{uid}_1"))
-            if info.get("is_partner") or info.get("is_gift"):
-                row.append(InlineKeyboardButton("👤 Клиент (10%)", callback_data=f"client_partner_{uid}_0"))
-            if row:
-                kb.append(row)
-            kb.append([InlineKeyboardButton("✏️ Изменить % рефералки", callback_data=f"client_pct_{uid}")])
-        elif info.get("_assigned_only"):
-            kb.append([InlineKeyboardButton("ℹ️ Ожидает первого захода в бота", callback_data="noop")])
+        if is_owner:
+            if info.get("_assigned_only") and un_param:
+                un_safe = un_param.replace(" ", "_")[:32]
+                if not info.get("is_blocked"):
+                    kb.append([InlineKeyboardButton("🚫 Заблокировать (навсегда)", callback_data=f"client_block_u_{un_safe}_1")])
+                row = []
+                if not info.get("is_partner"):
+                    row.append(InlineKeyboardButton("🤝 Партнёр (20%)", callback_data=f"client_partner_u_{un_safe}_1"))
+                if not info.get("is_gift"):
+                    row.append(InlineKeyboardButton("🎁 Подарок (10%)", callback_data=f"client_gift_u_{un_safe}_1"))
+                if info.get("is_partner") or info.get("is_gift"):
+                    row.append(InlineKeyboardButton("👤 Клиент (10%)", callback_data=f"client_partner_u_{un_safe}_0"))
+                if row:
+                    kb.append(row)
+                kb.append([InlineKeyboardButton("✏️ Изменить % рефералки", callback_data=f"client_pct_u_{un_safe}")])
+            elif uid and not info.get("_assigned_only"):
+                if not info.get("is_blocked"):
+                    kb.append([InlineKeyboardButton("🚫 Заблокировать (навсегда)", callback_data=f"client_block_{uid}_1")])
+                row = []
+                if not info.get("is_partner"):
+                    row.append(InlineKeyboardButton("🤝 Партнёр (20%)", callback_data=f"client_partner_{uid}_1"))
+                if not info.get("is_gift"):
+                    row.append(InlineKeyboardButton("🎁 Подарок (10%)", callback_data=f"client_gift_{uid}_1"))
+                if info.get("is_partner") or info.get("is_gift"):
+                    row.append(InlineKeyboardButton("👤 Клиент (10%)", callback_data=f"client_partner_{uid}_0"))
+                if row:
+                    kb.append(row)
+                kb.append([InlineKeyboardButton("✏️ Изменить % рефералки", callback_data=f"client_pct_{uid}")])
         kb.append([InlineKeyboardButton("◀️ К списку", callback_data="list_clients")])
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         return
     if data.startswith("client_partner_") and is_owner:
-        parts = data.replace("client_partner_", "").split("_")
-        if len(parts) == 2:
-            uid, is_part = int(parts[0]), int(parts[1])
-            set_partner(uid, bool(is_part))
-            info = get_client_full_info(uid)
-            if info:
-                un = f"@{info['username']}" if info.get("username") else f"ID:{info['telegram_id']}"
-                role = "партнёром (20%)" if is_part else "клиентом (10%)"
-                await query.edit_message_text(f"✅ {un} назначен {role}.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К клиенту", callback_data=f"client_{uid}")]]))
+        rest = data.replace("client_partner_", "")
+        if rest.startswith("u_"):
+            parts = rest[2:].rsplit("_", 1)
+            if len(parts) == 2:
+                un, is_part = parts[0], int(parts[1])
+                set_pending_partner(un, bool(is_part))
+                info = get_client_full_info(0, un)
+                if info:
+                    un_display = f"@{info['username']}" if info.get("username") else un
+                    role = "партнёром (20%)" if is_part else "клиентом (10%)"
+                    await query.edit_message_text(f"✅ {un_display} назначен {role}.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К клиенту", callback_data=f"client_u_{un}")]]))
+        else:
+            parts = rest.split("_")
+            if len(parts) == 2:
+                uid, is_part = int(parts[0]), int(parts[1])
+                set_partner(uid, bool(is_part))
+                info = get_client_full_info(uid)
+                if info:
+                    un = f"@{info['username']}" if info.get("username") else f"ID:{info['telegram_id']}"
+                    role = "партнёром (20%)" if is_part else "клиентом (10%)"
+                    await query.edit_message_text(f"✅ {un} назначен {role}.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К клиенту", callback_data=f"client_{uid}")]]))
         return
     if data.startswith("client_gift_") and is_owner:
-        parts = data.replace("client_gift_", "").split("_")
-        if len(parts) == 2:
-            uid, is_gift = int(parts[0]), int(parts[1])
-            set_gift(uid, bool(is_gift))
-            info = get_client_full_info(uid)
-            if info:
-                un = f"@{info['username']}" if info.get("username") else f"ID:{info['telegram_id']}"
-                role = "подарком (10%)" if is_gift else "клиентом"
-                await query.edit_message_text(f"✅ {un} назначен {role}.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К клиенту", callback_data=f"client_{uid}")]]))
+        rest = data.replace("client_gift_", "")
+        if rest.startswith("u_"):
+            parts = rest[2:].rsplit("_", 1)
+            if len(parts) == 2:
+                un, is_gift = parts[0], int(parts[1])
+                set_pending_gift(un, bool(is_gift))
+                info = get_client_full_info(0, un)
+                if info:
+                    un_display = f"@{info['username']}" if info.get("username") else un
+                    role = "подарком (10%)" if is_gift else "клиентом"
+                    await query.edit_message_text(f"✅ {un_display} назначен {role}.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К клиенту", callback_data=f"client_u_{un}")]]))
+        else:
+            parts = rest.split("_")
+            if len(parts) == 2:
+                uid, is_gift = int(parts[0]), int(parts[1])
+                set_gift(uid, bool(is_gift))
+                info = get_client_full_info(uid)
+                if info:
+                    un = f"@{info['username']}" if info.get("username") else f"ID:{info['telegram_id']}"
+                    role = "подарком (10%)" if is_gift else "клиентом"
+                    await query.edit_message_text(f"✅ {un} назначен {role}.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К клиенту", callback_data=f"client_{uid}")]]))
         return
     if data.startswith("client_block_") and is_owner:
-        parts = data.replace("client_block_", "").split("_")
-        if len(parts) == 2:
-            uid, is_block = int(parts[0]), int(parts[1])
-            set_blocked(uid, bool(is_block))
-            info = get_client_full_info(uid)
+        rest = data.replace("client_block_", "")
+        if rest.startswith("u_"):
+            un = rest[2:].rsplit("_", 1)[0] if "_" in rest[2:] else rest[2:]
+            set_pending_blocked(un, True)
+            info = get_client_full_info(0, un)
             if info:
-                un = f"@{info['username']}" if info.get("username") else f"ID:{info['telegram_id']}"
-                status = "заблокирован" if is_block else "разблокирован"
-                await query.edit_message_text(f"✅ {un} {status}.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К клиенту", callback_data=f"client_{uid}")]]))
+                un_display = f"@{info['username']}" if info.get("username") else un
+                await query.edit_message_text(f"✅ {un_display} заблокирован навсегда.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К клиенту", callback_data=f"client_u_{un}")]]))
+        else:
+            parts = rest.split("_")
+            if len(parts) == 2:
+                uid, is_block = int(parts[0]), int(parts[1])
+                set_blocked(uid, bool(is_block))
+                info = get_client_full_info(uid)
+                if info:
+                    un = f"@{info['username']}" if info.get("username") else f"ID:{info['telegram_id']}"
+                    await query.edit_message_text(f"✅ {un} заблокирован навсегда.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К клиенту", callback_data=f"client_{uid}")]]))
         return
     if data.startswith("client_pct_") and is_owner:
-        uid = int(data.replace("client_pct_", ""))
-        context.user_data["awaiting_client_pct"] = uid
-        info = get_client_full_info(uid)
-        un = f"@{info['username']}" if info and info.get("username") else f"ID:{uid}"
-        await query.edit_message_text(
-            f"✏️ Укажите процент рефералки для {un} (0–100):",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data=f"client_{uid}")]])
-        )
+        rest = data.replace("client_pct_", "")
+        if rest.startswith("u_"):
+            un = rest[2:]
+            context.user_data["awaiting_client_pct"] = f"u_{un}"
+            un_display = f"@{un}" if un else ""
+            await query.edit_message_text(
+                f"✏️ Укажите процент рефералки для {un_display} (0–100):",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data=f"client_u_{un}")]])
+            )
+        else:
+            uid = int(rest)
+            context.user_data["awaiting_client_pct"] = uid
+            info = get_client_full_info(uid)
+            un = f"@{info['username']}" if info and info.get("username") else f"ID:{uid}"
+            await query.edit_message_text(
+                f"✏️ Укажите процент рефералки для {un} (0–100):",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data=f"client_{uid}")]])
+            )
         return
     if data == "ref_stats":
         context.user_data.pop("awaiting_payment", None)
@@ -769,24 +823,30 @@ async def on_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if context.user_data.get("awaiting_client_pct") and _is_owner(update.effective_user.id):
-        uid = context.user_data.pop("awaiting_client_pct", None)
+        target = context.user_data.pop("awaiting_client_pct", None)
         if text in ("отмена", "cancel"):
             await update.message.reply_text("Отменено.", reply_markup=_main_menu_keyboard(True))
             return
-        if uid is not None:
+        if target is not None:
             try:
                 pct = float(update.message.text.strip().replace(",", "."))
                 if 0 <= pct <= 100:
-                    set_custom_discount(uid, pct)
-                    info = get_client_full_info(uid)
-                    un = f"@{info['username']}" if info and info.get("username") else f"ID:{uid}"
-                    await update.message.reply_text(f"✅ Реферальный процент для {un}: {pct}%", reply_markup=_main_menu_keyboard(True))
+                    if isinstance(target, str) and target.startswith("u_"):
+                        un = target[2:]
+                        set_pending_discount(un, pct)
+                        un_display = f"@{un}"
+                        await update.message.reply_text(f"✅ Реферальный процент для {un_display}: {pct}%", reply_markup=_main_menu_keyboard(True))
+                    else:
+                        set_custom_discount(target, pct)
+                        info = get_client_full_info(target)
+                        un = f"@{info['username']}" if info and info.get("username") else f"ID:{target}"
+                        await update.message.reply_text(f"✅ Реферальный процент для {un}: {pct}%", reply_markup=_main_menu_keyboard(True))
                 else:
                     await update.message.reply_text("⚠️ Процент от 0 до 100.")
-                    context.user_data["awaiting_client_pct"] = uid
+                    context.user_data["awaiting_client_pct"] = target
             except ValueError:
                 await update.message.reply_text("⚠️ Введите число.")
-                context.user_data["awaiting_client_pct"] = uid
+                context.user_data["awaiting_client_pct"] = target
         return
 
     if context.user_data.get("awaiting_assign_for"):
@@ -1223,6 +1283,7 @@ async def client_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             pass
     ensure_user(user_id, username, referred_by)
+    merge_pending_to_user(user_id, username)
     u = get_user(user_id)
     if u and u.get("is_blocked"):
         await update.message.reply_text("⛔ Доступ ограничен. Обратитесь к администратору.")

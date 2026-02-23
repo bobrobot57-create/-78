@@ -161,6 +161,16 @@ def init_db():
                 PRIMARY KEY (admin_id)
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS pending_users (
+                username TEXT PRIMARY KEY,
+                is_blocked INTEGER DEFAULT 0,
+                is_partner INTEGER DEFAULT 0,
+                is_gift INTEGER DEFAULT 0,
+                custom_discount_pct REAL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         conn.commit()
 
 
@@ -267,6 +277,80 @@ def clear_pending_code_assign(admin_id: int):
         cur.execute("DELETE FROM pending_code_assign WHERE admin_id = ?", (admin_id,))
 
 
+def ensure_pending_user(username: str) -> None:
+    """Создать запись в pending_users при выдаче кода (если ещё нет в users)."""
+    un = (username or "").strip().lstrip("@").lower()
+    if not un:
+        return
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT OR IGNORE INTO pending_users (username, is_blocked, is_partner, is_gift) VALUES (?, 0, 0, 0)", (un,))
+
+
+def get_pending_user(username: str) -> dict | None:
+    un = (username or "").strip().lstrip("@").lower()
+    if not un:
+        return None
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT username, is_blocked, is_partner, is_gift, custom_discount_pct FROM pending_users WHERE username = ?", (un,))
+        row = cur.fetchone()
+    if not row:
+        return None
+    pct = row[4] if row[4] is not None else (20.0 if row[2] else 10.0)
+    return {"username": row[0], "is_blocked": bool(row[1]), "is_partner": bool(row[2]), "is_gift": bool(row[3]), "custom_discount_pct": row[4], "percent": pct}
+
+
+def set_pending_blocked(username: str, is_blocked: bool) -> bool:
+    ensure_pending_user(username)
+    un = (username or "").strip().lstrip("@").lower()
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE pending_users SET is_blocked = ? WHERE username = ?", (1 if is_blocked else 0, un))
+        return cur.rowcount > 0
+
+
+def set_pending_partner(username: str, is_partner: bool) -> bool:
+    ensure_pending_user(username)
+    un = (username or "").strip().lstrip("@").lower()
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE pending_users SET is_partner = ?, is_gift = 0 WHERE username = ?", (1 if is_partner else 0, un))
+        return cur.rowcount > 0
+
+
+def set_pending_gift(username: str, is_gift: bool) -> bool:
+    ensure_pending_user(username)
+    un = (username or "").strip().lstrip("@").lower()
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE pending_users SET is_gift = ?, is_partner = 0 WHERE username = ?", (1 if is_gift else 0, un))
+        return cur.rowcount > 0
+
+
+def set_pending_discount(username: str, percent: float | None) -> bool:
+    ensure_pending_user(username)
+    un = (username or "").strip().lstrip("@").lower()
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE pending_users SET custom_discount_pct = ? WHERE username = ?", (percent, un))
+        return cur.rowcount > 0
+
+
+def merge_pending_to_user(telegram_id: int, username: str) -> None:
+    """При первом заходе: скопировать pending → users, удалить pending."""
+    un = (username or "").strip().lstrip("@").lower()
+    if not un:
+        return
+    pend = get_pending_user(un)
+    if pend:
+        with get_db() as conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET is_blocked = ?, is_partner = ?, is_gift = ?, custom_discount_pct = ? WHERE telegram_id = ?",
+                        (1 if pend["is_blocked"] else 0, 1 if pend["is_partner"] else 0, 1 if pend["is_gift"] else 0, pend.get("custom_discount_pct"), telegram_id))
+            cur.execute("DELETE FROM pending_users WHERE username = ?", (un,))
+
+
 def set_code_assigned(code: str, username: str | None) -> bool:
     rec = get_code_by_value(code)
     if not rec:
@@ -277,6 +361,8 @@ def set_code_assigned(code: str, username: str | None) -> bool:
     with get_db() as conn:
         cur = conn.cursor()
         cur.execute("UPDATE codes SET assigned_username = ? WHERE id = ?", (un if un else None, rec["id"]))
+    if un:
+        ensure_pending_user(un)
     return True
 
 
@@ -719,6 +805,26 @@ def get_client_full_info(telegram_id: int, username: str | None = None) -> dict 
 def _get_client_info_assigned_only(username: str) -> dict:
     """Инфо для пользователя, которому выдан код, но он ещё не заходил."""
     sub = get_user_subscription_info(0, username)
+    pend = get_pending_user(username)
+    if pend:
+        pct = pend["percent"]
+        return {
+            "telegram_id": 0,
+            "username": username,
+            "referred_by": None,
+            "referrer": None,
+            "is_partner": pend["is_partner"],
+            "is_gift": pend["is_gift"],
+            "is_blocked": pend["is_blocked"],
+            "custom_discount_pct": pend.get("custom_discount_pct"),
+            "first_seen": None,
+            "ref_count": 0,
+            "pending_usd": 0,
+            "percent": pct,
+            "subscription": sub,
+            "days_left": None,
+            "_assigned_only": True,
+        }
     return {
         "telegram_id": 0,
         "username": username,
