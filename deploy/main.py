@@ -26,7 +26,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from telegram import Update, BotCommand
 
-from db import init_db, check_license, activate_code, create_code, add_payment, payment_exists_by_order_id, get_all_admin_ids, list_admins, get_user, _db_health_check
+from db import init_db, check_license, activate_code, create_code, add_payment, payment_exists_by_order_id, get_all_admin_ids, list_admins, get_user, _db_health_check, can_accept_db_request
 from handlers import build_admin_app, build_client_app, set_client_bot, get_client_bot
 from payment import (
     generate_freekassa_link,
@@ -95,6 +95,8 @@ async def health(request: Request):
 async def webhook_admin(request: Request):
     if not ADMIN_TOKEN:
         return Response(status_code=500)
+    if not can_accept_db_request():
+        return Response(status_code=503)  # Telegram повторит — не 200 при перегрузке
     try:
         data = await request.json()
     except Exception:
@@ -204,6 +206,8 @@ async def payment_cryptomus(request: Request):
 async def webhook_client(request: Request):
     if not CLIENT_TOKEN:
         return Response(status_code=500)
+    if not can_accept_db_request():
+        return Response(status_code=503)  # Telegram повторит
     try:
         data = await request.json()
     except Exception:

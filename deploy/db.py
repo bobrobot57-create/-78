@@ -143,6 +143,16 @@ def _reset_critical_errors():
     _CRITICAL_ERRORS = []
 
 
+def can_accept_db_request() -> bool:
+    """Есть ли свободный слот для БД. Для webhook — если False, вернуть 503."""
+    if not _USE_PG:
+        return True
+    if _DB_SEMAPHORE.acquire(block=False):
+        _DB_SEMAPHORE.release()
+        return True
+    return False
+
+
 def _db_health_check() -> bool:
     """Проверка доступности БД. Возвращает True если OK."""
     try:
@@ -1109,116 +1119,52 @@ def list_clients_with_extended(sort_by: str = "date") -> list:
 
 
 def get_client_full_info(telegram_id: int, username: str | None = None) -> dict | None:
-    """Полная информация о клиенте — ОДИН запрос к БД вместо 6+, чтобы не ложить сервер."""
+    """Полная информация о клиенте."""
     if telegram_id == 0 and username:
         return _get_client_info_assigned_only(username)
-    with get_db() as conn:
-        cur = conn.cursor()
-        try:
-            cur.execute(
-                "SELECT telegram_id, username, referred_by, is_partner, custom_discount_pct, first_seen, COALESCE(is_gift,0), COALESCE(is_blocked,0) FROM users WHERE telegram_id = ?",
-                (telegram_id,)
-            )
-        except sqlite3.OperationalError:
-            cur.execute(
-                "SELECT telegram_id, username, referred_by, is_partner, custom_discount_pct, first_seen FROM users WHERE telegram_id = ?",
-                (telegram_id,)
-            )
-        row = cur.fetchone()
-        if not row:
-            return None
-        u = {
-            "telegram_id": row[0], "username": row[1], "referred_by": row[2], "is_partner": bool(row[3]),
-            "custom_discount_pct": row[4], "first_seen": row[5] if len(row) > 5 else None,
-            "is_gift": bool(row[6]) if len(row) > 6 else False,
-            "is_blocked": bool(row[7]) if len(row) > 7 else False,
-        }
-        un = (u.get("username") or "").strip().lstrip("@").lower()
-        pct = float(u["custom_discount_pct"]) if u.get("custom_discount_pct") is not None else (20.0 if u.get("is_partner") else 10.0)
-        cur.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ?", (telegram_id,))
-        ref_count = cur.fetchone()[0] or 0
-        cur.execute(
-            "SELECT COALESCE(SUM(amount_usd), 0) FROM referral_payouts WHERE referrer_id = ? AND status = 'pending'",
-            (telegram_id,)
-        )
-        pending = round(float(cur.fetchone()[0] or 0), 2)
-        referrer = None
-        if u.get("referred_by"):
-            cur.execute("SELECT username FROM users WHERE telegram_id = ?", (u["referred_by"],))
-            rrow = cur.fetchone()
-            if rrow:
-                referrer = f"@{rrow[0] or u['referred_by']}"
-        cur.execute("""
-            SELECT c.code, c.days, c.is_developer, a.expires_at, a.revoked
-            FROM activations a JOIN codes c ON c.id = a.code_id
-            WHERE a.user_telegram_id = ? AND a.revoked = 0
-            ORDER BY a.activated_at DESC LIMIT 1
-        """, (telegram_id,))
-        sub_row = cur.fetchone()
-        if sub_row:
-            sub = {"code": sub_row[0], "days": sub_row[1], "is_developer": bool(sub_row[2]), "expires_at": sub_row[3], "revoked": bool(sub_row[4]), "status": "activated"}
-        elif un:
-            cur.execute("""
-                SELECT c.code, c.days, c.is_developer
-                FROM codes c
-                WHERE LOWER(REPLACE(COALESCE(c.assigned_username,''), '@', '')) = ?
-                AND NOT EXISTS (SELECT 1 FROM activations a WHERE a.code_id = c.id AND a.revoked = 0)
-                ORDER BY c.id DESC LIMIT 1
-            """, (un,))
-            sub_row = cur.fetchone()
-            sub = {"code": sub_row[0], "days": sub_row[1], "is_developer": bool(sub_row[2]), "expires_at": None, "revoked": False, "status": "assigned"} if sub_row else None
-        else:
-            sub = None
-        days_left = None
-        if sub:
-            if sub["is_developer"]:
-                days_left = "∞"
-            elif sub.get("expires_at"):
-                from datetime import datetime
-                exp = _to_datetime(sub["expires_at"])
-                days_left = max(0, (exp - datetime.utcnow()).days) if exp else None
-        return {
-            "telegram_id": u["telegram_id"],
-            "username": u.get("username") or "",
-            "referred_by": u.get("referred_by"),
-            "referrer": referrer,
-            "is_partner": u.get("is_partner", False),
-            "is_gift": u.get("is_gift", False),
-            "is_blocked": u.get("is_blocked", False),
-            "custom_discount_pct": u.get("custom_discount_pct"),
-            "first_seen": u.get("first_seen"),
-            "ref_count": ref_count,
-            "pending_usd": pending,
-            "percent": pct,
-            "subscription": sub,
-            "days_left": days_left,
-            "_assigned_only": False,
-        }
+    u = get_user(telegram_id)
+    if not u:
+        return None
+    sub = get_user_subscription_info(telegram_id, u.get("username"))
+    ref_count = len(list_referrals(telegram_id))
+    pending = get_user_total_pending(telegram_id)
+    pct = get_referral_percent(telegram_id)
+    referrer = None
+    if u.get("referred_by"):
+        ref_u = get_user(u["referred_by"])
+        if ref_u:
+            referrer = f"@{ref_u.get('username') or ref_u['telegram_id']}"
+    days_left = None
+    if sub:
+        if sub["is_developer"]:
+            days_left = "∞"
+        elif sub["expires_at"]:
+            from datetime import datetime
+            exp = _to_datetime(sub["expires_at"])
+            days_left = max(0, (exp - datetime.utcnow()).days) if exp else None
+    return {
+        "telegram_id": u["telegram_id"],
+        "username": u.get("username") or "",
+        "referred_by": u.get("referred_by"),
+        "referrer": referrer,
+        "is_partner": u.get("is_partner", False),
+        "is_gift": u.get("is_gift", False),
+        "is_blocked": u.get("is_blocked", False),
+        "custom_discount_pct": u.get("custom_discount_pct"),
+        "first_seen": u.get("first_seen"),
+        "ref_count": ref_count,
+        "pending_usd": pending,
+        "percent": pct,
+        "subscription": sub,
+        "days_left": days_left,
+        "_assigned_only": False,
+    }
 
 
 def _get_client_info_assigned_only(username: str) -> dict:
-    """Инфо для assigned-only — один запрос к БД."""
-    un = (username or "").strip().lstrip("@").lower()
-    if not un:
-        return {"telegram_id": 0, "username": username or "", "referred_by": None, "referrer": None,
-                "is_partner": False, "is_gift": False, "is_blocked": False, "custom_discount_pct": None,
-                "first_seen": None, "ref_count": 0, "pending_usd": 0, "percent": 10,
-                "subscription": None, "days_left": None, "_assigned_only": True}
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT username, is_blocked, is_partner, is_gift, custom_discount_pct FROM pending_users WHERE username = ?", (un,))
-        pend_row = cur.fetchone()
-        cur.execute("""
-            SELECT c.code, c.days, c.is_developer
-            FROM codes c
-            WHERE LOWER(REPLACE(COALESCE(c.assigned_username,''), '@', '')) = ?
-            AND NOT EXISTS (SELECT 1 FROM activations a WHERE a.code_id = c.id AND a.revoked = 0)
-            ORDER BY c.id DESC LIMIT 1
-        """, (un,))
-        sub_row = cur.fetchone()
-    sub = {"code": sub_row[0], "days": sub_row[1], "is_developer": bool(sub_row[2]), "expires_at": None, "revoked": False, "status": "assigned"} if sub_row else None
-    pct = (pend_row[4] if pend_row[4] is not None else (20.0 if pend_row[2] else 10.0)) if pend_row else 10.0
-    pend = {"username": pend_row[0], "is_blocked": bool(pend_row[1]), "is_partner": bool(pend_row[2]), "is_gift": bool(pend_row[3]), "custom_discount_pct": pend_row[4], "percent": pct} if pend_row else None
+    """Инфо для пользователя, которому выдан код, но он ещё не заходил."""
+    sub = get_user_subscription_info(0, username)
+    pend = get_pending_user(username)
     if pend:
         pct = pend["percent"]
         return {
