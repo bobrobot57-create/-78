@@ -171,7 +171,9 @@ def _get_conn():
         if pool:
             try:
                 conn = pool.getconn()
-            except Exception:
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error("pool.getconn() failed: %s", e, exc_info=True)
                 _on_critical_db_error()  # pool.getconn() упал — критическая ошибка
                 raise
             return _PgConnWrapper(conn)
@@ -184,6 +186,8 @@ def _get_conn():
 def get_db():
     # Таймаут 60 сек — иначе запросы висят вечно при перегрузке
     if not _DB_SEMAPHORE.acquire(timeout=60):
+        import logging
+        logging.getLogger(__name__).error("get_db: таймаут семафора 60 сек — слоты заняты")
         _on_critical_db_error()
         try:
             from psycopg2.pool import PoolError

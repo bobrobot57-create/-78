@@ -1429,10 +1429,13 @@ async def client_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    import logging
+    _log = logging.getLogger(__name__)
     if isinstance(context.error, (TimedOut, NetworkError)):
         return
     # PoolError — показываем сообщение (callback или message)
     if isinstance(context.error, PoolError):
+        _log.error("PoolError (Сервер перегружен): %s", context.error)
         try:
             q = getattr(update, "callback_query", None)
             msg = getattr(update, "message", None)
@@ -1444,6 +1447,7 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         return
+    _log.exception("Handler error: %s", context.error)
     raise context.error
 
 
@@ -1452,7 +1456,7 @@ def build_admin_app(token: str) -> Application:
         Application.builder()
         .token(token)
         .updater(None)
-        .concurrent_updates(8)
+        .concurrent_updates(3)  # 3+3=6 воркеров, под DB_CONCURRENT_LIMIT=6
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
@@ -1479,7 +1483,7 @@ def build_client_app(token: str) -> Application:
         Application.builder()
         .token(token)
         .updater(None)
-        .concurrent_updates(8)
+        .concurrent_updates(3)  # 3+3=6 воркеров, под DB_CONCURRENT_LIMIT=6
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
