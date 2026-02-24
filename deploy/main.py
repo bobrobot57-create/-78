@@ -26,8 +26,9 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from telegram import Update, BotCommand
 
-from db import init_db, check_license, activate_code, create_code, add_payment, payment_exists_by_order_id, get_all_admin_ids, list_admins, get_user, _db_health_check
+from db import init_db, load_settings_cache, check_license, activate_code, create_code, add_payment, payment_exists_by_order_id, get_all_admin_ids, list_admins, get_user, _db_health_check
 from handlers import build_admin_app, build_client_app, set_client_bot, get_client_bot
+from queue_pending import start_pending_processor
 from payment import (
     generate_freekassa_link,
     verify_freekassa_webhook,
@@ -249,6 +250,7 @@ async def run():
     pool_size = int(os.environ.get("THREAD_POOL_SIZE", "10"))
     asyncio.get_event_loop().set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=pool_size))
     init_db()
+    load_settings_cache()
 
     if not WEBHOOK_BASE:
         print("⚠️ WEBHOOK_BASE_URL не задан! Задай в переменных окружения (например https://твой-проект.up.railway.app)")
@@ -298,37 +300,17 @@ async def run():
     import uvicorn
     config = uvicorn.Config(app, host="0.0.0.0", port=port)
 
-    # Watchdog: перезапуск только при реальной недоступности БД, не при PoolError
-    async def _watchdog():
-        fails = 0
+    # Очередь при PoolError — раз в 10 сек возвращаем запросы на обработку
+    start_pending_processor()
+
+    async def _refresh_settings_loop():
         while True:
             await asyncio.sleep(60)
-            try:
-                ok = await asyncio.to_thread(_db_health_check)
-                if ok:
-                    fails = 0
-                else:
-                    fails += 1
-                    if fails >= 3:
-                        log.warning("Watchdog: БД недоступна 3 раза подряд — перезапуск")
-                        import os
-                        os._exit(1)
-            except Exception as e:
-                err_str = str(e).lower()
-                if "pool" in err_str or "exhausted" in err_str:
-                    fails = 0  # PoolError — не перезапускать, это перегрузка
-                    log.debug("Watchdog: PoolError, сброс счётчика")
-                else:
-                    fails += 1
-                    log.warning("Watchdog: %s", e)
-                    if fails >= 3:
-                        log.warning("Watchdog: 3 ошибки подряд — перезапуск")
-                        import os
-                        os._exit(1)
+            load_settings_cache()
 
-    # Процессоры ботов + веб-сервер + watchdog — все параллельно
+    asyncio.create_task(_refresh_settings_loop())
     server = uvicorn.Server(config)
-    tasks = [server.serve(), _watchdog()]
+    tasks = [server.serve()]
     if admin_app:
         tasks.append(admin_app.start())
     if client_app:

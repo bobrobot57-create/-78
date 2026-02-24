@@ -91,8 +91,9 @@ class _PgCursorWrapper:
 
 class _PgConnWrapper:
     """Обёртка соединения: cursor() возвращает _PgCursorWrapper (psycopg2.cursor read-only)."""
-    def __init__(self, conn):
+    def __init__(self, conn, pool=None):
         self._conn = conn
+        self._pool = pool  # если задан — возвращаем в пул, иначе close()
 
     def cursor(self):
         return _PgCursorWrapper(self._conn.cursor())
@@ -104,7 +105,10 @@ class _PgConnWrapper:
         self._conn.rollback()
 
     def close(self):
-        self._conn.close()
+        if self._pool:
+            self._pool.putconn(self._conn)  # возврат в пул, не закрытие
+        else:
+            self._conn.close()
 
 
 _PG_POOL = None
@@ -114,10 +118,14 @@ def _get_pg_pool():
     global _PG_POOL
     if _PG_POOL is None and _USE_PG:
         import psycopg2.pool
-        minconn = 3
-        maxconn = int(os.environ.get("DB_POOL_SIZE", "30"))
-        maxconn = max(maxconn, 20)  # минимум 20 — иначе 16 воркеров исчерпают пул
-        _PG_POOL = psycopg2.pool.ThreadedConnectionPool(minconn, maxconn, _DATABASE_URL)
+        minconn = 2
+        # Railway Free ~10 соединений — пул не больше 8, чтобы не крашить БД при очереди
+        maxconn = int(os.environ.get("DB_POOL_SIZE", "8"))
+        maxconn = min(maxconn, 8)  # жёсткий лимит под Railway
+        _PG_POOL = psycopg2.pool.ThreadedConnectionPool(
+            minconn, maxconn, _DATABASE_URL,
+            connect_timeout=15  # не висеть при недоступной БД
+        )
     return _PG_POOL
 
 
@@ -156,10 +164,10 @@ def _get_conn():
     if _USE_PG:
         pool = _get_pg_pool()
         if pool:
-            conn = pool.getconn()  # блокируется при исчерпании, не падает
-            return _PgConnWrapper(conn)
+            conn = pool.getconn()
+            return _PgConnWrapper(conn, pool)
         import psycopg2
-        return _PgConnWrapper(psycopg2.connect(_DATABASE_URL))
+        return _PgConnWrapper(psycopg2.connect(_DATABASE_URL), pool=None)
     return sqlite3.connect(DB_PATH)
 
 
@@ -181,7 +189,7 @@ def get_db():
     finally:
         if conn is not None:
             try:
-                conn.close()  # всегда возвращаем в пул
+                conn.close()  # для PG — putconn в пул; для SQLite — close
             except Exception:
                 pass  # не маскируем исходную ошибку, но соединение могло уйти в пул
 
@@ -1206,6 +1214,30 @@ def list_recent_payments(limit: int = 30) -> list:
 
 # --- Settings ---
 
+# Кэш настроек — показ меню «Получить софт» без обращения к БД
+_settings_cache: dict = {}
+
+
+def load_settings_cache():
+    """Загружает все настройки из БД в память. При PoolError — оставляет старый кэш."""
+    try:
+        with get_db() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT key, value FROM settings")
+            rows = cur.fetchall()
+            _settings_cache.clear()
+            for r in rows:
+                if r and len(r) >= 2 and r[0]:
+                    _settings_cache[str(r[0])] = str(r[1]) if r[1] else ""
+    except Exception:
+        pass  # при ошибке пула — сохраняем старый кэш
+
+
+def get_setting_cached(key: str, default: str = "") -> str:
+    """Возвращает настройку из кэша — без обращения к БД."""
+    return _settings_cache.get(key, default) or default
+
+
 def get_setting(key: str, default: str = "") -> str:
     with get_db() as conn:
         cur = conn.cursor()
@@ -1218,6 +1250,7 @@ def set_setting(key: str, value: str):
     with get_db() as conn:
         cur = conn.cursor()
         cur.execute("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)", (key, value))
+    _settings_cache[key] = value
 
 
 def get_free_codes(limit: int = 20) -> list:

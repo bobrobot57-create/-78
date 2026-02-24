@@ -25,6 +25,7 @@ from telegram.ext import (
     Application, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler,
     filters,
 )
+from queue_pending import add_pending
 from db import (
     create_code, create_codes_batch, revoke_code, list_codes_and_activations,
     get_owner_id, get_all_admin_ids, add_admin, remove_admin, list_admins, is_appointed_admin,
@@ -36,7 +37,7 @@ from db import (
     ensure_pending_user, get_pending_user, set_pending_blocked, set_pending_partner, set_pending_gift, set_pending_discount, merge_pending_to_user,
     list_referrals, add_payment, get_referral_stats, get_user_payouts, get_user_total_pending,
     list_all_users, list_paid_users, list_assigned_usernames_not_in_users, list_clients_with_extended,
-    get_setting, set_setting, list_recent_payments,
+    get_setting, get_setting_cached, set_setting, list_recent_payments,
 )
 
 
@@ -583,12 +584,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             info = await _retry_db(get_client_full_info, uid, un_param) if un_param else await _retry_db(get_client_full_info, uid)
         except (PoolError, OperationalError):
+            add_pending(update, context.application.update_queue)
             await query.edit_message_text(
-                "⚠️ Сервер занят. Ваш запрос в очереди — нажмите «Повторить» через 15–30 сек.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Повторить", callback_data=data)],
-                    [InlineKeyboardButton("◀️ К списку", callback_data="list_clients")]
-                ])
+                "⏳ Обрабатываю...",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К списку", callback_data="list_clients")]])
             )
             return
         if not info:
@@ -1319,7 +1318,8 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚠️ Не удалось создать ссылку. Попробуйте позже или выберите оплату картой.", reply_markup=InlineKeyboardMarkup([_client_menu_button()]))
         return
     if query.data == "client_software":
-        url = get_setting("software_url", "https://drive.google.com/drive/folders/18hdLnr_zPo7_Eao9thFQkp2H4nbgtLIa").strip()
+        # Из кэша — без БД, меню показывается сразу
+        url = get_setting_cached("software_url", "https://drive.google.com/drive/folders/18hdLnr_zPo7_Eao9thFQkp2H4nbgtLIa").strip()
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
         text = (
@@ -1460,11 +1460,13 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     if is_db_overload:
         _log.warning("DB overload: %s", err)
         try:
+            target_queue = getattr(context.application, "update_queue", None)
+            if target_queue:
+                add_pending(update, target_queue)
             q = getattr(update, "callback_query", None)
             msg = getattr(update, "message", None)
-            err_text = "⚠️ Сервер занят. Ваш запрос в очереди — нажмите «Повторить» через 15–30 сек."
-            retry_data = q.data if q else "main_menu"
-            kb = [[InlineKeyboardButton("🔄 Повторить", callback_data=retry_data)], [InlineKeyboardButton("◀️ Меню", callback_data="main_menu")]]
+            err_text = "⏳ Обрабатываю..."
+            kb = [[InlineKeyboardButton("◀️ Меню", callback_data="main_menu")]]
             if q:
                 await q.edit_message_text(err_text, reply_markup=InlineKeyboardMarkup(kb))
             elif msg:
@@ -1490,7 +1492,7 @@ def build_admin_app(token: str) -> Application:
         Application.builder()
         .token(token)
         .updater(None)
-        .concurrent_updates(8)  # 8+8=16 воркеров, пул 30 — 1 юзер кликает без лимита
+        .concurrent_updates(1)  # 1 воркер — меньше нагрузка на пул БД при очереди
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
@@ -1517,7 +1519,7 @@ def build_client_app(token: str) -> Application:
         Application.builder()
         .token(token)
         .updater(None)
-        .concurrent_updates(8)  # 8+8=16 воркеров, пул 30 — 1 юзер кликает без лимита
+        .concurrent_updates(1)  # 1 воркер — меньше нагрузка на пул БД при очереди
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
