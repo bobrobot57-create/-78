@@ -685,9 +685,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if data == "settings_menu" and is_owner:
         welcome = get_setting("welcome_message", "🎙 *VoiceLab* — озвучка текста\n\nОплатите подписку и напишите «Оплатил».")
-        price_30 = get_setting("price_30", "15")
-        price_60 = get_setting("price_60", "25")
-        price_90 = get_setting("price_90", "35")
+        price_30 = get_setting("price_30", "35")
+        price_60 = get_setting("price_60", "70")
+        price_90 = get_setting("price_90", "100")
         software_url = get_setting("software_url", "https://drive.google.com/")
         fk_ok = "✅" if get_setting("fk_merchant_id", "") else "❌"
         cm_ok = "✅" if get_setting("cryptomus_merchant", "") else "❌"
@@ -751,7 +751,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if data == "set_prices" and is_owner:
         context.user_data["awaiting_setting"] = "prices"
-        await query.edit_message_text("💵 Отправьте цены через пробел: 30д 60д 90д\nНапример: 15 25 35", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="settings_menu")]]))
+        await query.edit_message_text("💵 Отправьте цены через пробел: 30д 60д 90д\nНапример: 35 70 100", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="settings_menu")]]))
         return
     if data == "set_software_url" and is_owner:
         context.user_data["awaiting_setting"] = "software_url"
@@ -1247,9 +1247,9 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = [_client_menu_button()]
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
             return
-        price_30 = float(get_setting("price_30", "15"))
-        price_60 = float(get_setting("price_60", "25"))
-        price_90 = float(get_setting("price_90", "35"))
+        price_30 = float(get_setting("price_30", "35"))
+        price_60 = float(get_setting("price_60", "70"))
+        price_90 = float(get_setting("price_90", "100"))
         from payment import generate_freekassa_link, create_cryptomus_invoice
         import os
         webhook_base = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/")
@@ -1294,7 +1294,7 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if plan_days not in (30, 60, 90):
             return
         price_key = f"price_{plan_days}"
-        amount = float(get_setting(price_key, "15" if plan_days == 30 else "25" if plan_days == 60 else "35"))
+        amount = float(get_setting(price_key, "35" if plan_days == 30 else "70" if plan_days == 60 else "100"))
         import os
         webhook_base = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/")
         if not webhook_base:

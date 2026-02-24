@@ -342,7 +342,7 @@ def _init_db_sqlite(conn, cur):
     cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_telegram_id)")
     for k, v in [
         ("welcome_message", "🎙 *VoiceLab* — озвучка текста\n\nОплатите подписку и напишите «Оплатил»."),
-        ("price_30", "15"), ("price_60", "25"), ("price_90", "35"),
+        ("price_30", "35"), ("price_60", "70"), ("price_90", "100"),
         ("software_url", "https://drive.google.com/drive/folders/18hdLnr_zPo7_Eao9thFQkp2H4nbgtLIa"),
         ("payments_enabled", "0"), ("manual_payment_contact", "@Drykey"),
     ]:
@@ -463,7 +463,7 @@ def _init_db_pg(conn, cur):
     cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_telegram_id)")
     for k, v in [
         ("welcome_message", "🎙 *VoiceLab* — озвучка текста\n\nОплатите подписку и напишите «Оплатил»."),
-        ("price_30", "15"), ("price_60", "25"), ("price_90", "35"),
+        ("price_30", "35"), ("price_60", "70"), ("price_90", "100"),
         ("software_url", "https://drive.google.com/drive/folders/18hdLnr_zPo7_Eao9thFQkp2H4nbgtLIa"),
         ("payments_enabled", "0"), ("manual_payment_contact", "@Drykey"),
     ]:
