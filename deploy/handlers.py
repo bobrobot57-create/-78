@@ -691,7 +691,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         software_url = get_setting("software_url", "https://drive.google.com/")
         fk_ok = "✅" if get_setting("fk_merchant_id", "") else "❌"
         cm_ok = "✅" if get_setting("cryptomus_merchant", "") else "❌"
-        pay_on = get_setting("payments_enabled", "0") == "1"
+        pay_on = get_setting("payments_enabled", "1") == "1"
         manual_contact = get_setting("manual_payment_contact", "@Drykey")
         text = (
             f"⚙️ *Настройки*\n\n"
@@ -714,7 +714,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         return
     if data == "toggle_payments" and is_owner:
-        cur = "1" if get_setting("payments_enabled", "0") != "1" else "0"
+        cur = "1" if get_setting("payments_enabled", "1") != "1" else "0"
         set_setting("payments_enabled", cur)
         status = "включена" if cur == "1" else "выключена"
         await query.edit_message_text(f"✅ Онлайн-оплата {status}.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Настройки", callback_data="settings_menu")]]))
@@ -1232,7 +1232,7 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(welcome, parse_mode="Markdown", reply_markup=_client_keyboard())
         return
     if query.data == "client_buy":
-        payments_enabled = get_setting("payments_enabled", "0") == "1"
+        payments_enabled = get_setting("payments_enabled", "1") == "1"
         manual_contact = get_setting("manual_payment_contact", "@Drykey")
         if not payments_enabled:
             text = (
@@ -1242,7 +1242,7 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "📦 *30 дней* | *60 дней* | *90 дней*\n"
                 "━━━━━━━━━━━━━━━━\n\n"
                 "💳 Онлайн-оплата временно недоступна.\n\n"
-                f"📩 Для покупки напишите: {manual_contact}"
+                f"📩 По всем вопросам пишите: {manual_contact}"
             )
             kb = [_client_menu_button()]
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
@@ -1269,7 +1269,8 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📦 *90 дней* — ${price_90}  _(макс. выгода)_\n"
             "━━━━━━━━━━━━━━━━\n\n"
             "💡 Выберите тариф и способ оплаты.\n"
-            "✅ Ключ придёт сюда автоматически после оплаты."
+            "✅ Ключ придёт сюда автоматически после оплаты.\n\n"
+            f"📩 По всем вопросам пишите: {manual_contact}"
         )
         kb = []
         if has_fk:
@@ -1285,7 +1286,7 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("₿ Крипто 90д", callback_data="pay_cm_90"),
             ])
         if not has_fk and not has_cm:
-            text += f"\n\n⚠️ Онлайн-оплата не настроена. Напишите {manual_contact}"
+            text += f"\n\n⚠️ Онлайн-оплата не настроена. По всем вопросам пишите: {manual_contact}"
         kb.append(_client_menu_button())
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         return
@@ -1444,7 +1445,7 @@ async def client_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if "оплатил" in text_lower or "купить" in text_lower:
         manual_contact = get_setting("manual_payment_contact", "@Drykey")
-        await update.message.reply_text(f"Для покупки напишите: {manual_contact}\n\nПосле подтверждения получите код.")
+        await update.message.reply_text(f"По всем вопросам пишите: {manual_contact}\n\nОплатите подписку в меню «Купить подписку» — ключ придёт автоматически.")
 
 
 async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
