@@ -45,32 +45,44 @@ FK_CURRENCY=USD
 
 ## Cryptomus
 
-### Регистрация
+### Регистрация и модерация
 
 1. Зарегистрируйтесь на [cryptomus.com](https://cryptomus.com/).
-2. В личном кабинете получите:
-   - **Merchant UUID**
-   - **API ключ** (Payment API Key)
+2. Создайте проект, добавьте URL бота (например `https://t.me/NeuralVoiceLabBot`).
+3. Подтвердите владение ботом (код в описание бота в @BotFather → Check).
+4. Модерация до 24 часов. **Merchant UUID** и **API ключ** доступны уже после создания проекта.
 
-### Настройка webhook
+### Где взять API ключ
 
-При создании инвойса бот передаёт `url_callback` автоматически:
-`https://ВАШ-ДОМЕН/payment/cryptomus` (например `https://78-production.up.railway.app/payment/cryptomus`)
+1. Войдите в [app.cryptomus.com](https://app.cryptomus.com/) или личный кабинет Cryptomus.
+2. Выберите проект (VoiceLab).
+3. **Настройки** → **API** → **Создать API ключ** / **Create API key**.
+4. Скопируйте ключ (показывается один раз).
 
-Убедитесь, что `WEBHOOK_BASE_URL` задан в переменных окружения.
+### Railway — что настроить
+
+В Railway в переменных окружения должен быть:
+```
+WEBHOOK_BASE_URL=https://ваш-проект.up.railway.app
+```
+Без этого Cryptomus не сможет отправить webhook после оплаты. FreeKassa и Cryptomus используют один и тот же URL.
 
 ### Настройка в боте
 
-В админ-боте: **⚙️ Настройки** → **₿ Cryptomus** → отправьте:
+В админ-боте: **⚙️ Настройки** → **₿ Cryptomus** → отправьте одной строкой через пробел:
 ```
-merchant_uuid api_key
+54251872-9d4b-45af-8be1-66ee2a071f20 ваш_api_ключ
 ```
 
-Или через переменные окружения:
+Или через переменные окружения в Railway:
 ```
-CRYPTOMUS_MERCHANT=uuid-вашего-мерчанта
+CRYPTOMUS_MERCHANT=54251872-9d4b-45af-8be1-66ee2a071f20
 CRYPTOMUS_API_KEY=ваш_api_ключ
 ```
+
+### Когда заработает
+
+После одобрения модерации и добавления merchant + api_key в бот — ссылки на оплату криптой появятся автоматически. Ничего дополнительно в Railway настраивать не нужно (кроме WEBHOOK_BASE_URL).
 
 ---
 

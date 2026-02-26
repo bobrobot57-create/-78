@@ -691,19 +691,21 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         software_url = get_setting("software_url", "https://drive.google.com/")
         fk_ok = "✅" if get_setting("fk_merchant_id", "") else "❌"
         cm_ok = "✅" if get_setting("cryptomus_merchant", "") else "❌"
-        pay_on = get_setting("payments_enabled", "1") == "1"
+        cards_on = get_setting("payments_cards_enabled", "1") == "1"
+        crypto_on = get_setting("payments_crypto_enabled", "1") == "1"
         manual_contact = get_setting("manual_payment_contact", "@Drykey")
         text = (
             f"⚙️ *Настройки*\n\n"
             f"Приветствие: _{welcome[:50]}..._\n\n"
             f"Цены (USD): 30д={price_30} | 60д={price_60} | 90д={price_90}\n"
             f"Софт: {software_url[:40]}...\n\n"
-            f"💳 Онлайн-оплата: {'✅ Вкл' if pay_on else '❌ Выкл'}\n"
-            f"📩 Контакт при выкл: {manual_contact}\n\n"
-            f"Платёжки: FreeKassa {fk_ok} | Cryptomus {cm_ok}"
+            f"💳 Карты (FreeKassa): {'✅ Вкл' if cards_on else '❌ Выкл'} {fk_ok}\n"
+            f"₿ Крипто (Cryptomus): {'✅ Вкл' if crypto_on else '❌ Выкл'} {cm_ok}\n"
+            f"📩 Контакт: {manual_contact}\n\n"
+            f"_Если оба выкл — клиент видит только контакт партнёра._"
         )
         kb = [
-            [InlineKeyboardButton("💳 Вкл/выкл оплату", callback_data="toggle_payments")],
+            [InlineKeyboardButton("💳 Карты вкл/выкл", callback_data="toggle_cards"), InlineKeyboardButton("₿ Крипто вкл/выкл", callback_data="toggle_crypto")],
             [InlineKeyboardButton("📩 Контакт при выкл", callback_data="set_manual_contact")],
             [InlineKeyboardButton("✏️ Приветствие", callback_data="set_welcome")],
             [InlineKeyboardButton("💵 Цены", callback_data="set_prices")],
@@ -713,11 +715,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         return
-    if data == "toggle_payments" and is_owner:
-        cur = "1" if get_setting("payments_enabled", "1") != "1" else "0"
-        set_setting("payments_enabled", cur)
+    if data == "toggle_cards" and is_owner:
+        cur = "1" if get_setting("payments_cards_enabled", "1") != "1" else "0"
+        set_setting("payments_cards_enabled", cur)
         status = "включена" if cur == "1" else "выключена"
-        await query.edit_message_text(f"✅ Онлайн-оплата {status}.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Настройки", callback_data="settings_menu")]]))
+        await query.edit_message_text(f"✅ Оплата картой {status}.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Настройки", callback_data="settings_menu")]]))
+        return
+    if data == "toggle_crypto" and is_owner:
+        cur = "1" if get_setting("payments_crypto_enabled", "1") != "1" else "0"
+        set_setting("payments_crypto_enabled", cur)
+        status = "включена" if cur == "1" else "выключена"
+        await query.edit_message_text(f"✅ Оплата криптой {status}.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Настройки", callback_data="settings_menu")]]))
         return
     if data == "set_manual_contact" and is_owner:
         context.user_data["awaiting_setting"] = "manual_payment_contact"
@@ -1240,21 +1248,9 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(welcome, parse_mode="Markdown", reply_markup=_client_keyboard())
         return
     if query.data == "client_buy":
-        payments_enabled = get_setting("payments_enabled", "1") == "1"
-        manual_contact = get_setting("manual_payment_contact", "@Drykey")
-        if not payments_enabled:
-            text = (
-                "🛒 *Магазин подписок VoiceLab*\n\n"
-                "🎙 Профессиональная озвучка текста нейросетью\n\n"
-                "━━━━━━━━━━━━━━━━\n"
-                "📦 *30 дней* | *60 дней* | *90 дней*\n"
-                "━━━━━━━━━━━━━━━━\n\n"
-                "💳 Онлайн-оплата временно недоступна.\n\n"
-                f"📩 По всем вопросам пишите: {manual_contact}"
-            )
-            kb = [_client_menu_button()]
-            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-            return
+        cards_enabled = get_setting_cached("payments_cards_enabled", "1") == "1"
+        crypto_enabled = get_setting_cached("payments_crypto_enabled", "1") == "1"
+        manual_contact = get_setting_cached("manual_payment_contact", "@Drykey")
         # Из кэша — цены обновляются сразу после сохранения в админке
         price_30 = float(get_setting_cached("price_30", "35"))
         price_60 = float(get_setting_cached("price_60", "70"))
@@ -1269,6 +1265,22 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cm_merchant = get_setting("cryptomus_merchant", "") or os.environ.get("CRYPTOMUS_MERCHANT", "")
         cm_key = get_setting("cryptomus_api_key", "") or os.environ.get("CRYPTOMUS_API_KEY", "")
         has_cm = bool(cm_merchant and cm_key)
+        show_cards = has_fk and cards_enabled
+        show_crypto = has_cm and crypto_enabled
+        # Оба выкл или оба не настроены — только контакт партнёра
+        if not show_cards and not show_crypto:
+            text = (
+                "🛒 *Магазин подписок VoiceLab*\n\n"
+                "🎙 Профессиональная озвучка текста нейросетью\n\n"
+                "━━━━━━━━━━━━━━━━\n"
+                "📦 *30 дней* | *60 дней* | *90 дней*\n"
+                "━━━━━━━━━━━━━━━━\n\n"
+                "💳 Онлайн-оплата недоступна.\n\n"
+                f"📩 По всем вопросам пишите: {manual_contact}"
+            )
+            kb = [_client_menu_button()]
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+            return
         text = (
             "🛒 *Магазин подписок VoiceLab*\n\n"
             "🎙 Профессиональная озвучка текста нейросетью\n\n"
@@ -1282,12 +1294,10 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📩 По всем вопросам пишите: {manual_contact}"
         )
         kb = []
-        if has_fk:
+        if show_cards:
             kb.append([InlineKeyboardButton("💳 Оплата картой", callback_data="client_pay_cards")])
-        if has_cm:
+        if show_crypto:
             kb.append([InlineKeyboardButton("₿ Оплата криптой", callback_data="client_pay_crypto")])
-        if not has_fk and not has_cm:
-            text += f"\n\n⚠️ Онлайн-оплата не настроена. По всем вопросам пишите: {manual_contact}"
         kb.append(_client_menu_button())
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         return

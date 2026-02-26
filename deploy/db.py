@@ -347,6 +347,7 @@ def _init_db_sqlite(conn, cur):
         ("price_30", "35"), ("price_60", "70"), ("price_90", "100"),
         ("software_url", "https://drive.google.com/drive/folders/18hdLnr_zPo7_Eao9thFQkp2H4nbgtLIa"),
         ("payments_enabled", "1"), ("manual_payment_contact", "@Drykey"),
+        ("payments_cards_enabled", "1"), ("payments_crypto_enabled", "1"),
     ]:
         cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
     cur.execute("""
@@ -468,6 +469,7 @@ def _init_db_pg(conn, cur):
         ("price_30", "35"), ("price_60", "70"), ("price_90", "100"),
         ("software_url", "https://drive.google.com/drive/folders/18hdLnr_zPo7_Eao9thFQkp2H4nbgtLIa"),
         ("payments_enabled", "1"), ("manual_payment_contact", "@Drykey"),
+        ("payments_cards_enabled", "1"), ("payments_crypto_enabled", "1"),
     ]:
         cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", (k, v))
     cur.execute("""
