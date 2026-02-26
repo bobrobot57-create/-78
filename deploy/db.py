@@ -45,7 +45,9 @@ def _pg_adapt_sql(sql: str) -> str:
     # INSERT OR REPLACE
     if "INSERT OR REPLACE" in sql.upper():
         sql = sql.replace("INSERT OR REPLACE", "INSERT")
-        if "INTO admins " in sql:
+        if "INTO settings " in sql:
+            sql = re.sub(r"\)\s*$", ") ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=CURRENT_TIMESTAMP", sql)
+        elif "INTO admins " in sql:
             sql = re.sub(r"\)\s*$", ") ON CONFLICT (telegram_id) DO UPDATE SET username=EXCLUDED.username, added_by=EXCLUDED.added_by", sql)
         elif "INTO pending_code_assign " in sql:
             sql = re.sub(r"\)\s*$", ") ON CONFLICT (admin_id) DO UPDATE SET code=EXCLUDED.code, created_at=EXCLUDED.created_at", sql)

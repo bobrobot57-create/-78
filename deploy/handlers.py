@@ -1227,7 +1227,8 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         return
-    if query.data == "client_back":
+    if query.data in ("client_back", "main_menu"):
+        # main_menu — от обработчика ошибок, ведёт в главное меню
         welcome = get_setting("welcome_message", "🎙 *VoiceLab* — озвучка текста\n\nОплатите подписку и напишите «Оплатил».")
         await query.edit_message_text(welcome, parse_mode="Markdown", reply_markup=_client_keyboard())
         return
@@ -1453,10 +1454,12 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     _log = logging.getLogger(__name__)
     if isinstance(context.error, (TimedOut, NetworkError)):
         return
-    # PoolError / OperationalError (too many connections) — не крашим
+    # PoolError / OperationalError (connection pool) — показываем «Обрабатываю», не «Ошибка»
     err = context.error
+    err_str = str(err).lower()
     is_db_overload = isinstance(err, PoolError) or (
-        hasattr(err, "__class__") and "OperationalError" in type(err).__name__ and ("connection" in str(err).lower() or "too many" in str(err).lower())
+        isinstance(err, OperationalError)
+        and any(x in err_str for x in ("connection", "pool", "exhausted", "too many"))
     )
     if is_db_overload:
         _log.warning("DB overload: %s", err)
