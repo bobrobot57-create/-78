@@ -928,6 +928,58 @@ async def on_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data["awaiting_client_pct"] = target
         return
 
+    # Сначала — явные «ожидаю ввод» (настройки, рассылка и т.д.), иначе «1 10 100» уйдёт в выдачу кода
+    if context.user_data.get("awaiting_setting") and _is_owner(update.effective_user.id):
+        key = context.user_data.pop("awaiting_setting", None)
+        if text in ("отмена", "cancel"):
+            await update.message.reply_text("Отменено.", reply_markup=_main_menu_keyboard(True))
+            return
+        try:
+            if key == "welcome_message":
+                set_setting("welcome_message", update.message.text)
+                await update.message.reply_text("✅ Приветствие обновлено.", reply_markup=_main_menu_keyboard(True))
+            elif key == "prices":
+                parts = update.message.text.strip().split()
+                if len(parts) >= 3:
+                    set_setting("price_30", parts[0])
+                    set_setting("price_60", parts[1])
+                    set_setting("price_90", parts[2])
+                    await update.message.reply_text("✅ Цены обновлены.", reply_markup=_main_menu_keyboard(True))
+                else:
+                    await update.message.reply_text("⚠️ Нужно 3 числа: 30д 60д 90д")
+                    context.user_data["awaiting_setting"] = "prices"
+            elif key == "software_url":
+                set_setting("software_url", update.message.text.strip())
+                await update.message.reply_text("✅ Ссылка обновлена.", reply_markup=_main_menu_keyboard(True))
+            elif key == "freekassa":
+                parts = update.message.text.strip().split()
+                if len(parts) >= 3:
+                    set_setting("fk_merchant_id", parts[0])
+                    set_setting("fk_secret_1", parts[1])
+                    set_setting("fk_secret_2", parts[2])
+                    await update.message.reply_text("✅ FreeKassa настроен.", reply_markup=_main_menu_keyboard(True))
+                else:
+                    await update.message.reply_text("⚠️ Нужно 3 значения: merchant_id secret1 secret2")
+                    context.user_data["awaiting_setting"] = "freekassa"
+            elif key == "cryptomus":
+                parts = update.message.text.strip().split()
+                if len(parts) >= 2:
+                    set_setting("cryptomus_merchant", parts[0])
+                    set_setting("cryptomus_api_key", parts[1])
+                    await update.message.reply_text("✅ Cryptomus настроен.", reply_markup=_main_menu_keyboard(True))
+                else:
+                    await update.message.reply_text("⚠️ Нужно 2 значения: merchant_uuid api_key")
+                    context.user_data["awaiting_setting"] = "cryptomus"
+            elif key == "manual_payment_contact":
+                set_setting("manual_payment_contact", update.message.text.strip() or "@Drykey")
+                await update.message.reply_text("✅ Контакт обновлён.", reply_markup=_main_menu_keyboard(True))
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("Ошибка сохранения настройки: %s", e)
+            context.user_data["awaiting_setting"] = key
+            await update.message.reply_text(f"⚠️ Ошибка: {e}. Попробуйте снова или нажмите «Отмена».")
+        return
+
     if context.user_data.get("awaiting_assign_for"):
         code_val = context.user_data.pop("awaiting_assign_for", None)
         if text in ("отмена", "cancel"):
@@ -991,51 +1043,6 @@ async def on_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if target_id != get_owner_id():
                 add_admin(target_id, None, update.effective_user.id)
                 await update.message.reply_text(f"✅ {target_id} добавлен.")
-        return
-
-    if context.user_data.get("awaiting_setting") and _is_owner(update.effective_user.id):
-        key = context.user_data.pop("awaiting_setting", None)
-        if text in ("отмена", "cancel"):
-            await update.message.reply_text("Отменено.", reply_markup=_main_menu_keyboard(True))
-            return
-        if key == "welcome_message":
-            set_setting("welcome_message", update.message.text)
-            await update.message.reply_text("✅ Приветствие обновлено.", reply_markup=_main_menu_keyboard(True))
-        elif key == "prices":
-            parts = update.message.text.strip().split()
-            if len(parts) >= 3:
-                set_setting("price_30", parts[0])
-                set_setting("price_60", parts[1])
-                set_setting("price_90", parts[2])
-                await update.message.reply_text("✅ Цены обновлены.", reply_markup=_main_menu_keyboard(True))
-            else:
-                await update.message.reply_text("⚠️ Нужно 3 числа: 30д 60д 90д")
-                context.user_data["awaiting_setting"] = "prices"
-        elif key == "software_url":
-            set_setting("software_url", update.message.text.strip())
-            await update.message.reply_text("✅ Ссылка обновлена.", reply_markup=_main_menu_keyboard(True))
-        elif key == "freekassa":
-            parts = update.message.text.strip().split()
-            if len(parts) >= 3:
-                set_setting("fk_merchant_id", parts[0])
-                set_setting("fk_secret_1", parts[1])
-                set_setting("fk_secret_2", parts[2])
-                await update.message.reply_text("✅ FreeKassa настроен.", reply_markup=_main_menu_keyboard(True))
-            else:
-                await update.message.reply_text("⚠️ Нужно 3 значения: merchant_id secret1 secret2")
-                context.user_data["awaiting_setting"] = "freekassa"
-        elif key == "cryptomus":
-            parts = update.message.text.strip().split()
-            if len(parts) >= 2:
-                set_setting("cryptomus_merchant", parts[0])
-                set_setting("cryptomus_api_key", parts[1])
-                await update.message.reply_text("✅ Cryptomus настроен.", reply_markup=_main_menu_keyboard(True))
-            else:
-                await update.message.reply_text("⚠️ Нужно 2 значения: merchant_uuid api_key")
-                context.user_data["awaiting_setting"] = "cryptomus"
-        elif key == "manual_payment_contact":
-            set_setting("manual_payment_contact", update.message.text.strip() or "@Drykey")
-            await update.message.reply_text("✅ Контакт обновлён.", reply_markup=_main_menu_keyboard(True))
         return
 
     if context.user_data.get("awaiting_broadcast") and _is_owner(update.effective_user.id):
