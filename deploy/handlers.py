@@ -1277,26 +1277,63 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📦 *60 дней* — ${price_60}  _(оптимально)_\n"
             f"📦 *90 дней* — ${price_90}  _(макс. выгода)_\n"
             "━━━━━━━━━━━━━━━━\n\n"
-            "💡 Выберите тариф и способ оплаты.\n"
+            "💡 Выберите способ оплаты:\n\n"
             "✅ Ключ придёт сюда автоматически после оплаты.\n\n"
             f"📩 По всем вопросам пишите: {manual_contact}"
         )
         kb = []
         if has_fk:
-            kb.append([
-                InlineKeyboardButton("💳 Карта 30д", url=fk_30),
-                InlineKeyboardButton("💳 Карта 60д", url=fk_60),
-                InlineKeyboardButton("💳 Карта 90д", url=fk_90),
-            ])
+            kb.append([InlineKeyboardButton("💳 Оплата картой", callback_data="client_pay_cards")])
         if has_cm:
-            kb.append([
-                InlineKeyboardButton("₿ Крипто 30д", callback_data="pay_cm_30"),
-                InlineKeyboardButton("₿ Крипто 60д", callback_data="pay_cm_60"),
-                InlineKeyboardButton("₿ Крипто 90д", callback_data="pay_cm_90"),
-            ])
+            kb.append([InlineKeyboardButton("₿ Оплата криптой", callback_data="client_pay_crypto")])
         if not has_fk and not has_cm:
             text += f"\n\n⚠️ Онлайн-оплата не настроена. По всем вопросам пишите: {manual_contact}"
         kb.append(_client_menu_button())
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        return
+    if query.data == "client_pay_cards":
+        price_30 = float(get_setting_cached("price_30", "35"))
+        price_60 = float(get_setting_cached("price_60", "70"))
+        price_90 = float(get_setting_cached("price_90", "100"))
+        from payment import generate_freekassa_link
+        fk_30 = generate_freekassa_link(user_id, price_30, 30)
+        fk_60 = generate_freekassa_link(user_id, price_60, 60)
+        fk_90 = generate_freekassa_link(user_id, price_90, 90)
+        if not (fk_30 and fk_60 and fk_90):
+            await query.edit_message_text("⚠️ Оплата картой временно недоступна.", reply_markup=InlineKeyboardMarkup([_client_menu_button()]))
+            return
+        text = (
+            "💳 *Оплата картой*\n\n"
+            "Выберите срок подписки:\n\n"
+            f"📦 30 дней — ${price_30}\n"
+            f"📦 60 дней — ${price_60}\n"
+            f"📦 90 дней — ${price_90}\n\n"
+            "✅ Ключ придёт сюда после оплаты."
+        )
+        kb = [
+            [InlineKeyboardButton("💳 30 дней", url=fk_30), InlineKeyboardButton("💳 60 дней", url=fk_60), InlineKeyboardButton("💳 90 дней", url=fk_90)],
+            [InlineKeyboardButton("◀️ Назад", callback_data="client_buy")],
+            _client_menu_button(),
+        ]
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        return
+    if query.data == "client_pay_crypto":
+        price_30 = float(get_setting_cached("price_30", "35"))
+        price_60 = float(get_setting_cached("price_60", "70"))
+        price_90 = float(get_setting_cached("price_90", "100"))
+        text = (
+            "₿ *Оплата криптовалютой*\n\n"
+            "Выберите срок подписки:\n\n"
+            f"📦 30 дней — ${price_30}\n"
+            f"📦 60 дней — ${price_60}\n"
+            f"📦 90 дней — ${price_90}\n\n"
+            "✅ Ключ придёт сюда после оплаты."
+        )
+        kb = [
+            [InlineKeyboardButton("₿ 30 дней", callback_data="pay_cm_30"), InlineKeyboardButton("₿ 60 дней", callback_data="pay_cm_60"), InlineKeyboardButton("₿ 90 дней", callback_data="pay_cm_90")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="client_buy")],
+            _client_menu_button(),
+        ]
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         return
     if query.data and query.data.startswith("pay_cm_"):
@@ -1321,11 +1358,12 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔗 Перейти к оплате", url=inv["url"])],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="client_pay_crypto")],
                     _client_menu_button(),
                 ])
             )
         else:
-            await query.edit_message_text("⚠️ Не удалось создать ссылку. Попробуйте позже или выберите оплату картой.", reply_markup=InlineKeyboardMarkup([_client_menu_button()]))
+            await query.edit_message_text("⚠️ Не удалось создать ссылку. Попробуйте позже или выберите оплату картой.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="client_pay_crypto")], _client_menu_button()]))
         return
     if query.data == "client_software":
         # Из кэша — без БД, меню показывается сразу
