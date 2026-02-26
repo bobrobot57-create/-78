@@ -1248,9 +1248,10 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = [_client_menu_button()]
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
             return
-        price_30 = float(get_setting("price_30", "35"))
-        price_60 = float(get_setting("price_60", "70"))
-        price_90 = float(get_setting("price_90", "100"))
+        # Из кэша — цены обновляются сразу после сохранения в админке
+        price_30 = float(get_setting_cached("price_30", "35"))
+        price_60 = float(get_setting_cached("price_60", "70"))
+        price_90 = float(get_setting_cached("price_90", "100"))
         from payment import generate_freekassa_link, create_cryptomus_invoice
         import os
         webhook_base = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/")
@@ -1296,7 +1297,7 @@ async def client_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if plan_days not in (30, 60, 90):
             return
         price_key = f"price_{plan_days}"
-        amount = float(get_setting(price_key, "35" if plan_days == 30 else "70" if plan_days == 60 else "100"))
+        amount = float(get_setting_cached(price_key, "35" if plan_days == 30 else "70" if plan_days == 60 else "100"))
         import os
         webhook_base = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/")
         if not webhook_base:

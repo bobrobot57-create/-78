@@ -48,7 +48,8 @@ def generate_freekassa_link(user_id: int, amount: float, plan_days: int) -> str 
         "us_userid": user_id,
         "us_days": plan_days,
     }
-    return "https://pay.freekassa.ru/?" + urllib.parse.urlencode(params)
+    # pay.fk.money — актуальный домен (pay.freekassa.ru может давать ERR_CERT)
+    return "https://pay.fk.money/?" + urllib.parse.urlencode(params)
 
 
 def verify_freekassa_webhook(merchant_id: str, amount: str, order_id: str, sign_received: str) -> bool:
